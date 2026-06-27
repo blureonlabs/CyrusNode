@@ -12,6 +12,7 @@ use crate::features::research::domain::{BizIntelPort, CrawlPort, ExtractPort, Se
 use crate::features::research::infra::{
     BizIntelAgent, HttpCrawlerAdapter, LighthouseSeoAdapter, MarkdownExtractorAdapter,
 };
+use crate::platform::crawler::{CrawlerConfig, HttpCrawler};
 use crate::platform::events::EventSubscription;
 
 pub struct ResearchModule {
@@ -22,7 +23,10 @@ pub struct ResearchModule {
 
 /// Wires the four boxes for the research feature. Called once from `bootstrap.rs`.
 pub fn configure() -> ResearchModule {
-    let crawl: Arc<dyn CrawlPort> = Arc::new(HttpCrawlerAdapter);
+    // Boot-time construction — `expect` here is acceptable per CLAUDE.md §3
+    // (no `unwrap` in prod paths; boot-time failures are intentional crashes).
+    let crawler = Arc::new(HttpCrawler::new(CrawlerConfig::default()).expect("crawler init"));
+    let crawl: Arc<dyn CrawlPort> = Arc::new(HttpCrawlerAdapter::new(crawler));
     let extract: Arc<dyn ExtractPort> = Arc::new(MarkdownExtractorAdapter);
     let seo: Arc<dyn SeoPort> = Arc::new(LighthouseSeoAdapter);
     let bizintel: Arc<dyn BizIntelPort> = Arc::new(BizIntelAgent);
