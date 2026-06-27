@@ -1,7 +1,7 @@
 ---
 name: whatsapp-writer
 version: 1
-model: claude-haiku-4-5
+model: gemini-2.5-pro
 temperature: 0.5
 max_output_tokens: 300
 inputs:

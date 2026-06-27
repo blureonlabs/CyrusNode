@@ -46,12 +46,28 @@ struct RawEmail {
     personalization_anchors: Option<Vec<RawAnchor>>,
 }
 
+/// Anchor as returned by the LLM. Accept both shapes the model produces in
+/// practice: a bare string (`"anchor text"`) or a structured object
+/// (`{ "type": "...", "text": "..." }`). We project to a flat string downstream.
 #[derive(Debug, serde::Deserialize)]
-struct RawAnchor {
-    #[serde(rename = "type")]
-    #[allow(dead_code)]
-    kind: Option<String>,
-    text: String,
+#[serde(untagged)]
+enum RawAnchor {
+    Plain(String),
+    Structured {
+        #[serde(rename = "type")]
+        #[allow(dead_code)]
+        kind: Option<String>,
+        text: String,
+    },
+}
+
+impl RawAnchor {
+    fn into_text(self) -> String {
+        match self {
+            RawAnchor::Plain(s) => s,
+            RawAnchor::Structured { text, .. } => text,
+        }
+    }
 }
 
 /// Email writer agent. Construct via [`EmailWriterAgent::new`].
@@ -324,7 +340,7 @@ fn explode(raw: RawEmail) -> anyhow::Result<(String, String, Vec<String>)> {
         .personalization_anchors
         .unwrap_or_default()
         .into_iter()
-        .map(|a| a.text)
+        .map(RawAnchor::into_text)
         .collect();
     Ok((subject, body, anchors))
 }

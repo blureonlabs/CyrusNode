@@ -12,7 +12,7 @@ use crate::features::drafting::{self, DraftingDeps};
 use crate::features::research::{self, ResearchDeps};
 use crate::platform::db::{build_pool, DbConfig, PgPool};
 use crate::platform::events::EventSubscription;
-use crate::platform::llm::{AnthropicClient, GeminiClient, LlmClient};
+use crate::platform::llm::{GeminiClient, LlmClient};
 use crate::platform::prompts::PromptLoader;
 
 /// Handles to every cross-cutting capability. Built once at boot; cloned freely.
@@ -28,11 +28,11 @@ pub struct Bootstrap {
     pub deps: PlatformDeps,
 }
 
-/// Wire everything for the API + worker binaries (requires Supabase + LLM keys).
+/// Wire everything for the API + worker binaries (requires Supabase + Gemini key).
 ///
-/// Reads from the environment via [`DbConfig::from_env`], [`GeminiClient::from_env`],
-/// [`AnthropicClient::from_env`], builds the connection pool, then constructs
-/// each feature module.
+/// Reads from the environment via [`DbConfig::from_env`] and
+/// [`GeminiClient::from_env`], builds the connection pool, then constructs each
+/// feature module. Gemini is the sole LLM provider per ADR-012.
 pub async fn build() -> Result<Bootstrap> {
     let cfg = DbConfig::from_env()?;
     let db = build_pool(&cfg).await?;
@@ -40,14 +40,13 @@ pub async fn build() -> Result<Bootstrap> {
 
     let prompts = PromptLoader::load("apollo/04-prompts").await?;
     let gemini: Arc<dyn LlmClient> = Arc::new(GeminiClient::from_env()?);
-    let anthropic: Arc<dyn LlmClient> = Arc::new(AnthropicClient::from_env()?);
 
     let research = research::configure(ResearchDeps {
         llm: gemini.clone(),
         prompts: prompts.clone(),
     });
     let drafting = drafting::configure(DraftingDeps {
-        llm: anthropic.clone(),
+        llm: gemini.clone(),
         prompts: prompts.clone(),
         banned_phrases_path: std::path::PathBuf::from(
             "apollo/05-knowledge/banned-email-phrases.txt",

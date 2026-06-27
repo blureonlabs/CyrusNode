@@ -3,7 +3,7 @@ name: business-summary
 version: 1
 model: gemini-2.5-flash
 temperature: 0.2
-max_output_tokens: 1500
+max_output_tokens: 4000
 inputs:
   - context
 outputs_schema: schemas/business-summary.v1.json

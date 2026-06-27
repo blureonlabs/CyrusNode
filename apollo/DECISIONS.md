@@ -215,6 +215,28 @@ Full rules in [[02-architecture/feature-layout]]. Supersedes the layer-based lay
 
 ---
 
+## ADR-012 · Gemini-only routing for V1 (supersedes ADR-010)
+
+**Status**: Accepted
+
+**Context**: ADR-010 routed agents across Gemini + Claude per agent kind. In practice the operator wants a single billing surface and a single key to manage. Gemini 2.5 Pro is also good enough at cold-email copywriting that the marginal quality gain from Claude Haiku doesn't justify the operational cost of a second provider.
+
+**Decision**: Every prompt routes through `GeminiClient` in V1.
+- Structured agents (BizIntel, Opportunity, ROI): `gemini-2.5-flash`.
+- Copy-heavy agents (Email Writer, WhatsApp Writer, Proposal, Meeting Coach): `gemini-2.5-pro`.
+
+The `AnthropicClient` impl stays in `platform::llm` (unused) so we can re-enable per-agent routing in 30 seconds if quality slips.
+
+**Supersedes**: ADR-010.
+
+**Consequences**:
+- One API key. One bill. Free tier covers V1 development.
+- Provider concentration: if Gemini has an outage, the whole pipeline stops. Acceptable for V1; revisit when paid clients depend on uptime.
+- Slightly lower cold-email quality than Claude on hard cases. Operator review is still in the loop (ADR-006) so this surfaces as edit time, not as a sent bad email.
+- Cost: drops below $4/month at projected V1 volume (200 companies × 10k tokens × Flash rates).
+
+---
+
 ## How to add an ADR
 
 1. Add a new entry at the bottom of this file with the next ADR number.

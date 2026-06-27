@@ -1,7 +1,7 @@
 ---
 name: meeting-coach
 version: 1
-model: claude-sonnet-4-6
+model: gemini-2.5-pro
 temperature: 0.4
 max_output_tokens: 2500
 inputs:

@@ -21,7 +21,7 @@ use apollo::features::research::infra::{
 use apollo::platform::core::CompanyId;
 use apollo::platform::crawler::{CrawlerConfig, HttpCrawler};
 use apollo::platform::db::{build_pool, run_migrations, DbConfig};
-use apollo::platform::llm::{AnthropicClient, GeminiClient, LlmClient};
+use apollo::platform::llm::{GeminiClient, LlmClient};
 use apollo::platform::prompts::PromptLoader;
 
 #[derive(Parser)]
@@ -66,7 +66,9 @@ enum Command {
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    // Try `.env.local` first (Apollo convention), then `.env` (Node/Next.js convention).
     let _ = dotenvy::from_filename(".env.local");
+    let _ = dotenvy::from_filename(".env");
     apollo::platform::observability::init()?;
     let cli = Cli::parse();
 
@@ -107,9 +109,8 @@ async fn run_ingest(
 ) -> Result<()> {
     eprintln!("==> loading prompts...");
     let prompts = PromptLoader::load("apollo/04-prompts").await?;
-    eprintln!("==> building LLM clients (Gemini + Claude)...");
+    eprintln!("==> building Gemini client (single-provider per ADR-012)...");
     let gemini: Arc<dyn LlmClient> = Arc::new(GeminiClient::from_env()?);
-    let anthropic: Arc<dyn LlmClient> = Arc::new(AnthropicClient::from_env()?);
 
     eprintln!("==> wiring research feature...");
     let crawler = Arc::new(HttpCrawler::new(CrawlerConfig::default())?);
@@ -123,7 +124,7 @@ async fn run_ingest(
     eprintln!("==> wiring drafting feature...");
     let banned_phrases_path = PathBuf::from("apollo/05-knowledge/banned-email-phrases.txt");
     let draft = Arc::new(EmailWriterAgent::new(
-        anthropic.clone(),
+        gemini.clone(),
         prompts.clone(),
         banned_phrases_path,
     ));

@@ -1,9 +1,9 @@
 ---
 name: email-writer
 version: 1
-model: claude-haiku-4-5
+model: gemini-2.5-flash
 temperature: 0.5
-max_output_tokens: 700
+max_output_tokens: 4000
 inputs:
   - business_intel
   - top_opportunity
