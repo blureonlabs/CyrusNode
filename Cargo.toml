@@ -68,7 +68,10 @@ sha2 = "0.10"
 hex = "0.4"
 
 # DB (wired in S1-T02 — declared here so deps are stable across the crate)
-sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "tls-rustls", "postgres", "uuid", "chrono", "json", "macros"] }
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "tls-rustls", "postgres", "uuid", "chrono", "json", "macros", "migrate"] }
+
+# .env.local loading (CLI + binaries — opt-in via dotenvy::from_filename)
+dotenvy = "0.15"
 
 [dev-dependencies]
 tokio = { version = "1.41", features = ["test-util", "macros"] }

@@ -8,6 +8,7 @@ use tokio::net::TcpListener;
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    let _ = dotenvy::from_filename(".env.local");
     apollo::platform::observability::init()?;
 
     let port: u16 = std::env::var("PORT")
@@ -15,7 +16,7 @@ async fn main() -> Result<()> {
         .and_then(|p| p.parse().ok())
         .unwrap_or(8080);
 
-    let boot = apollo::bootstrap::build()?;
+    let boot = apollo::bootstrap::build().await?;
 
     let addr = format!("0.0.0.0:{port}");
     let listener = TcpListener::bind(&addr).await?;

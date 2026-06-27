@@ -97,6 +97,7 @@ dependencies = [
  "axum",
  "chrono",
  "clap",
+ "dotenvy",
  "figment",
  "futures",
  "hex",

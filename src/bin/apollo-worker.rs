@@ -8,9 +8,10 @@ use tokio::time;
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    let _ = dotenvy::from_filename(".env.local");
     apollo::platform::observability::init()?;
 
-    let boot = apollo::bootstrap::build()?;
+    let boot = apollo::bootstrap::build().await?;
     tracing::info!(
         subscriptions = boot.subscriptions.len(),
         "apollo-worker started"
