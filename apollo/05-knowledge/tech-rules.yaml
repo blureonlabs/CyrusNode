@@ -1,0 +1,116 @@
+# Tech detection ruleset. Wappalyzer-style.
+# Each rule: name, category, signals (any-of). The agent computes confidence.
+
+- name: WordPress
+  category: cms
+  signals:
+    - header: x-powered-by
+      regex: "WordPress|PHP/"
+    - html: "wp-content/"
+    - meta_generator: "WordPress"
+    - script_src: "/wp-includes/"
+
+- name: WooCommerce
+  category: ecommerce
+  signals:
+    - html: "woocommerce"
+    - script_src: "/plugins/woocommerce/"
+
+- name: Shopify
+  category: ecommerce
+  signals:
+    - header: x-shopid
+      regex: ".+"
+    - script_src: "cdn.shopify.com"
+
+- name: Wix
+  category: cms
+  signals:
+    - meta_generator: "Wix.com"
+    - script_src: "wixstatic.com"
+
+- name: Squarespace
+  category: cms
+  signals:
+    - meta_generator: "Squarespace"
+    - script_src: "squarespace.com"
+
+- name: Webflow
+  category: cms
+  signals:
+    - meta_generator: "Webflow"
+    - script_src: "webflow.com"
+
+- name: Cloudflare
+  category: hosting
+  signals:
+    - header: server
+      regex: "cloudflare"
+    - header: cf-ray
+      regex: ".+"
+
+- name: Google Tag Manager
+  category: tag_managers
+  signals:
+    - script_src: "googletagmanager.com/gtm.js"
+
+- name: GA4
+  category: analytics
+  signals:
+    - script_src: "googletagmanager.com/gtag/js"
+
+- name: Meta Pixel
+  category: analytics
+  signals:
+    - html: "connect.facebook.net/en_US/fbevents.js"
+
+- name: Hotjar
+  category: analytics
+  signals:
+    - script_src: "static.hotjar.com"
+
+- name: Mailchimp
+  category: marketing
+  signals:
+    - script_src: "list-manage.com"
+    - html: "mailchimp"
+
+- name: Intercom
+  category: chat
+  signals:
+    - script_src: "widget.intercom.io"
+
+- name: Tawk.to
+  category: chat
+  signals:
+    - script_src: "embed.tawk.to"
+
+- name: Calendly
+  category: booking
+  signals:
+    - script_src: "assets.calendly.com"
+
+- name: HubSpot
+  category: crm
+  signals:
+    - script_src: "js.hs-scripts.com"
+    - script_src: "hubspot.com"
+
+- name: jQuery
+  category: frontend_js
+  signals:
+    - script_src: "jquery"
+
+- name: React
+  category: frontend_js
+  signals:
+    - html: "data-reactroot|__NEXT_DATA__"
+
+- name: Next.js
+  category: frontend_js
+  signals:
+    - html: "__NEXT_DATA__"
+    - header: x-powered-by
+      regex: "Next.js"
+
+# Add rules over time. Keep regexes anchored where possible.

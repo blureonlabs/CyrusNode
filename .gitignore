@@ -1,0 +1,42 @@
+# Rust
+/target/
+**/*.rs.bk
+Cargo.lock.bak
+
+# Env / secrets
+.env
+.env.local
+.env.*.local
+*.pem
+*.key
+
+# Editor
+.vscode/settings.json
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# SQLx offline cache (keep .sqlx/ for builds; ignore working files)
+.sqlx-cache/
+
+# Logs
+*.log
+logs/
+
+# Build artifacts
+dist/
+out/
+node_modules/
+.next/
+.turbo/
+
+# Test artifacts
+coverage/
+*.lcov
+
+# Local-only operator scratch
+scratch/
