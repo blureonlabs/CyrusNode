@@ -62,8 +62,16 @@ impl RobotsCache {
 
     async fn fetch(http: &Client, target: &Url, ua: &str) -> Option<Robot> {
         let host = target.host_str()?;
-        let robots_url = format!("{}://{}/robots.txt", target.scheme(), host);
-        let resp = http.get(&robots_url).send().await.ok()?;
+        let robots_url_str = format!("{}://{}/robots.txt", target.scheme(), host);
+        // SSRF guard before talking to the network.
+        let robots_url = Url::parse(&robots_url_str).ok()?;
+        if super::safety::ensure_public_host(&robots_url)
+            .await
+            .is_err()
+        {
+            return None;
+        }
+        let resp = http.get(robots_url.clone()).send().await.ok()?;
         if !resp.status().is_success() {
             return None;
         }

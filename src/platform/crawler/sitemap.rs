@@ -20,8 +20,17 @@ pub async fn try_fetch_sitemap(http: &Client, base: &Url) -> Result<Vec<Url>, ()
     };
 
     for candidate in ["sitemap.xml", "sitemap_index.xml"] {
-        let url = format!("{}://{}/{}", base.scheme(), host, candidate);
-        let resp = match http.get(&url).send().await {
+        let url_str = format!("{}://{}/{}", base.scheme(), host, candidate);
+        let url = match Url::parse(&url_str) {
+            Ok(u) => u,
+            Err(_) => continue,
+        };
+        // SSRF guard — the host comes from `base` but we still validate every
+        // outbound hit so the policy lives in one place.
+        if super::safety::ensure_public_host(&url).await.is_err() {
+            continue;
+        }
+        let resp = match http.get(url.clone()).send().await {
             Ok(r) => r,
             Err(_) => continue,
         };

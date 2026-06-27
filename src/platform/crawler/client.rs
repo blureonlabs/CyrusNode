@@ -100,6 +100,8 @@ pub enum SkipReason {
     Duplicate,
     /// Body could not be saved or parsed.
     ParseFailure,
+    /// Rejected by the SSRF guard (private / metadata / loopback IP).
+    Blocked,
 }
 
 /// Result of a single crawl run.
@@ -134,6 +136,10 @@ pub enum CrawlerError {
     /// robots.txt forbids us from fetching the start URL.
     #[error("robots blocks the start url")]
     RobotsBlockedStart,
+    /// The start URL resolves to a private / loopback / metadata address.
+    /// See [`super::safety`] for the policy.
+    #[error("ssrf-blocked: {0}")]
+    Blocked(String),
     /// Underlying HTTP client error during setup.
     #[error("network: {0}")]
     Network(#[from] reqwest::Error),
@@ -158,7 +164,10 @@ impl HttpCrawler {
         let http = Client::builder()
             .user_agent(&cfg.user_agent)
             .timeout(cfg.request_timeout)
-            .redirect(reqwest::redirect::Policy::limited(5))
+            // SSRF defense: disable automatic redirects so reqwest cannot follow
+            // a 30x to a private IP behind our backs. Same-host redirects show
+            // up as discovered links during BFS and are re-validated then.
+            .redirect(reqwest::redirect::Policy::none())
             .build()?;
         Ok(Self {
             http,
@@ -203,6 +212,12 @@ impl HttpCrawler {
             .ok_or_else(|| CrawlerError::InvalidUrl("no host".to_string()))?
             .to_string();
         span.record("host", tracing::field::display(&host));
+
+        // SSRF guard — resolve and reject loopback / private / metadata IPs.
+        if let Err(e) = super::safety::ensure_public_host(&url).await {
+            tracing::warn!(error = %e, "ssrf guard rejected start url");
+            return Err(CrawlerError::Blocked(e.to_string()));
+        }
 
         let out_dir = self.cfg.output_root.join(correlation_id);
         tokio::fs::create_dir_all(&out_dir).await?;
@@ -255,6 +270,18 @@ impl HttpCrawler {
             if !visited.insert(key.clone()) {
                 continue;
             }
+            // SSRF guard — every URL in the frontier gets re-validated. The
+            // same-host filter elsewhere doesn't help us against DNS rebinding
+            // or a sitemap that points the crawler at internal addresses.
+            if let Err(e) = super::safety::ensure_public_host(&next_url).await {
+                tracing::warn!(url = %next_url, error = %e, "ssrf guard blocked");
+                skipped.push(SkippedPage {
+                    url: key,
+                    reason: SkipReason::Blocked,
+                });
+                continue;
+            }
+
             if self.cfg.respect_robots
                 && !self
                     .robots

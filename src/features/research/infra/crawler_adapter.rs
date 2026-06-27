@@ -37,6 +37,7 @@ impl CrawlPort for HttpCrawlerAdapter {
                 CrawlerError::InvalidUrl(s) => CrawlError::Unreachable(s),
                 CrawlerError::Unreachable(s) => CrawlError::Unreachable(s),
                 CrawlerError::RobotsBlockedStart => CrawlError::Blocked("robots".to_string()),
+                CrawlerError::Blocked(s) => CrawlError::Blocked(s),
                 CrawlerError::Network(e) => CrawlError::Unreachable(e.to_string()),
                 CrawlerError::Io(e) => CrawlError::Unreachable(e.to_string()),
             })?;

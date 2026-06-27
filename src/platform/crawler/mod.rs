@@ -10,6 +10,7 @@
 mod client;
 mod links;
 mod robots;
+mod safety;
 mod sitemap;
 mod storage;
 
