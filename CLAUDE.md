@@ -40,85 +40,86 @@ Apollo ingests a company URL and produces, end-to-end, a research dossier, a tec
 - **Config**: `figment` reading `config/{default,local,prod}.toml` plus env overrides. No `dotenv` in production code.
 - **Time**: `chrono` with `Utc` only in domain. Convert to local at the edges.
 
-### Folder layout (Rust workspace — Feature-Driven DDD)
+### Folder layout (single crate — Feature-Driven DDD)
 
-We organize code **by feature, not by layer**. Each feature is its own crate. Each crate contains the same four boxes: `domain`, `application`, `infrastructure`, `presentation` — plus a `configure.rs` that wires them. See [[apollo/02-architecture/feature-layout]] for the full rules.
-
-```
-apps/
-  apollo-api/                # bootstrap + Axum server, registers feature routes
-  apollo-worker/             # bootstrap + job consumer, registers feature handlers
-  apollo-cli/                # bootstrap + Clap CLI
-
-crates/
-  platform-core/             # shared base types: Tenant, Ids, errors, Clock trait
-  platform-db/               # Postgres pool + migrations runner
-  platform-queue/            # jobs table + SKIP LOCKED + lease semantics (Agent trait lives here)
-  platform-events/           # event bus (LISTEN/NOTIFY) + saga runtime
-  platform-llm/              # LlmClient trait + Gemini/Claude impls + cost tracking
-  platform-prompts/          # hot-reloading prompt loader, prompt_versions repo
-  platform-crawler/          # HTTP fetcher, headless Chromium, HTML→Markdown
-  platform-embedder/         # Embedding trait + Vertex/Voyage impl + Qdrant client
-  platform-observability/    # tracing + OpenTelemetry setup
-
-  feature-discovery/         # niche+city → company candidates
-  feature-research/          # crawl → audit → bizintel (produces a dossier base)
-  feature-synthesis/         # opportunities + ROI
-  feature-drafting/          # email + whatsapp + proposal drafts
-  feature-review/            # operator queue, approve/reject, replay
-  feature-outreach/          # sender + sequencer + outbound webhooks
-  feature-conversations/     # threads, inbound webhooks, suggested replies
-  feature-meetings/          # meeting brief + outcome logging
-  feature-intelligence/      # Qdrant retrieval (past_wins, objections, proposals)
-
-migrations/                  # SQL migrations (per-feature subfolders allowed)
-```
-
-Each `feature-*` crate looks like this inside:
+We organize code **by feature, not by layer**. **One Cargo crate**, with `platform/` and `features/` as module trees inside `src/`. Three thin binaries via `src/bin/`. See [[apollo/02-architecture/feature-layout]] for the full rules.
 
 ```
-crates/feature-research/
-├── Cargo.toml
-└── src/
-    ├── lib.rs
-    ├── configure.rs              # the one wiring file for this feature
-    ├── domain/                   # types + rules. ZERO infra deps.
-    │   ├── mod.rs
-    │   ├── dossier.rs
-    │   ├── business_summary.rs
-    │   └── ports.rs              # traits the application asks of infra
-    ├── application/              # use cases (workflows)
-    │   ├── mod.rs
-    │   └── research_company.rs   # orchestrates: crawl → extract → audit → bizintel
-    ├── infrastructure/           # adapters that implement the ports
-    │   ├── mod.rs
-    │   ├── crawler_adapter.rs
-    │   ├── extractor_adapter.rs
-    │   ├── seo_runner.rs
-    │   └── bizintel_agent.rs     # the LLM agent impl lives here, not in domain
-    └── presentation/             # HTTP handlers + event subscriptions for this feature
-        ├── mod.rs
-        ├── routes.rs             # POST /companies, GET /companies/{id}
-        └── subscriptions.rs      # what events this feature listens to
+/
+├── Cargo.toml                       # one crate, name = "apollo"
+├── src/
+│   ├── lib.rs                       # crate entry
+│   ├── bootstrap.rs                 # wires platform + features for any binary
+│   │
+│   ├── bin/                         # thin entry points — call into the lib only
+│   │   ├── apollo-api.rs            # Axum HTTP server
+│   │   ├── apollo-worker.rs         # queue consumer
+│   │   └── apollo-cli.rs            # operator CLI
+│   │
+│   ├── platform/                    # shared kernel — capabilities, not product behavior
+│   │   ├── core/                    # base types: Ids, Clock, Tenant
+│   │   ├── db.rs                    # Postgres pool + migrations runner
+│   │   ├── queue.rs                 # jobs table, SKIP LOCKED, Agent trait
+│   │   ├── events.rs                # event bus + saga runtime
+│   │   ├── llm.rs                   # LlmClient trait + Gemini + Claude impls
+│   │   ├── prompts.rs               # hot-reloading prompt loader
+│   │   ├── crawler.rs               # HTTP fetcher, headless Chromium, HTML→Markdown
+│   │   └── observability.rs         # tracing + OpenTelemetry setup
+│   │
+│   └── features/                    # one module per bounded context
+│       ├── research/                # crawl → audit → bizintel (the dossier base)
+│       │   ├── mod.rs
+│       │   ├── configure.rs         # the one wiring file
+│       │   ├── domain/              # types + rules. ZERO I/O deps.
+│       │   │   ├── mod.rs
+│       │   │   ├── dossier.rs
+│       │   │   └── ports.rs         # traits application asks of infra
+│       │   ├── application/         # use cases (workflows)
+│       │   │   ├── mod.rs
+│       │   │   └── research_company.rs
+│       │   ├── infra/               # adapters that implement the ports
+│       │   │   ├── mod.rs
+│       │   │   ├── crawler_adapter.rs
+│       │   │   ├── extractor_adapter.rs
+│       │   │   ├── seo_runner.rs
+│       │   │   └── bizintel_agent.rs
+│       │   └── presentation/        # HTTP routes + event subscriptions for this feature
+│       │       ├── mod.rs
+│       │       ├── routes.rs
+│       │       └── subscriptions.rs
+│       │
+│       ├── drafting/                # email + whatsapp + proposal drafts (Sprint 1+)
+│       ├── discovery/               # niche+city → company candidates (Sprint 4)
+│       ├── synthesis/               # opportunities + ROI (Sprint 2)
+│       ├── review/                  # operator queue, approve/reject, replay (Sprint 2)
+│       ├── outreach/                # sender + sequencer + outbound webhooks (Sprint 2+)
+│       ├── conversations/           # threads, inbound webhooks, suggested replies (Sprint 3)
+│       ├── meetings/                # meeting brief + outcome logging (Sprint 5)
+│       └── intelligence/            # Qdrant retrieval — past_wins, objections (Sprint 5)
+│
+├── migrations/                      # SQL migrations
+├── scripts/
+│   └── check-domain-imports.sh      # CI lint that enforces the dependency rule
+└── apollo/                          # the Obsidian vault — docs are still source of truth
 ```
 
 **Dependency direction (the one rule):**
 
 ```
-presentation → application → domain ← infrastructure
+presentation → application → domain ← infra
 ```
 
-- `domain` knows nobody. Imports `serde`, `thiserror`, `platform-core` (for shared `Id` types) — that's it.
-- `application` imports `domain` only.
-- `infrastructure` imports `domain` (to implement ports) and platform crates (`platform-llm`, `platform-db`, etc.). It does NOT import `application` or `presentation`.
-- `presentation` imports `application` and `domain`. Never `infrastructure`.
+- `domain` knows nobody. Imports `serde`, `thiserror`, `chrono`, `uuid`, and `platform::core` — that's it.
+- `application` imports `domain` (its own feature's) only.
+- `infra` imports `domain` (to implement ports) and `platform::*` modules. It does NOT import `application` or `presentation`.
+- `presentation` imports `application` and `domain`. Never `infra`.
 
-If `domain/` ever imports `infrastructure/`, `platform-db`, `reqwest`, or `sqlx`, **you've broken the rule**. That is the only test that matters.
+If any file under `src/features/*/domain/` imports `sqlx`, `reqwest`, `axum`, `tokio::net`, `crate::platform::db`, `crate::platform::llm`, `crate::platform::crawler`, `crate::features::*::infra`, or any other I/O surface — **you've broken the rule**. `scripts/check-domain-imports.sh` (run as part of `make ci`) fails the build.
 
-**Cross-feature communication is forbidden directly.** Feature A never imports Feature B. They talk via events on the bus, or via shared types exported from `platform-core`. The wiring file in each app's `main.rs` is the only matchmaker.
+**Cross-feature communication is forbidden directly.** Feature A never `use crate::features::other::…`. Features talk via events on the bus, or via shared types exported from `platform::core`. `bootstrap.rs` is the only matchmaker — the single file that knows about all features.
 
 **When to make a port (trait):**
-- Make one when multiple infra implementations will exist (real vs. fake for tests, Postgres vs. Mongo, Gemini vs. Claude).
+- Make one when multiple infra implementations will exist (real vs. fake for tests, Postgres vs. another store, Gemini vs. Claude).
 - Don't make one for boot-time-only things — a factory function is plenty.
 
 ### Frontend (Next.js)

@@ -12,49 +12,55 @@ That's the whole pitch. Everything below is the discipline that makes it stick.
 
 ---
 
-## 2. The crate map
+## 2. The module map
+
+Apollo is **one crate** (`name = "apollo"`). Modules under `src/` hold the structure. Binaries under `src/bin/` are thin entry points.
 
 ```
-apps/
-  apollo-api/              # bootstrap + Axum
-  apollo-worker/           # bootstrap + queue consumer
-  apollo-cli/              # bootstrap + Clap
+src/
+  lib.rs
+  bootstrap.rs            # the only file that knows about all features
 
-crates/
-  platform-core/           # shared base types (Tenant, Ids, errors, Clock)
-  platform-db/             # Postgres pool + migrations runner
-  platform-queue/          # jobs table, SKIP LOCKED, lease, Agent trait
-  platform-events/         # event bus + saga runtime
-  platform-llm/            # LlmClient trait + Gemini + Claude impls
-  platform-prompts/        # hot-reloading prompt loader
-  platform-crawler/        # HTTP/headless fetch + HTML→Markdown
-  platform-embedder/       # embedding + Qdrant client
-  platform-observability/  # tracing setup
+  bin/
+    apollo-api.rs         # Axum HTTP server
+    apollo-worker.rs      # queue consumer
+    apollo-cli.rs         # operator CLI
 
-  feature-discovery/
-  feature-research/
-  feature-synthesis/
-  feature-drafting/
-  feature-review/
-  feature-outreach/
-  feature-conversations/
-  feature-meetings/
-  feature-intelligence/
+  platform/               # shared kernel
+    core/                 # shared base types (Tenant, Ids, Clock)
+    db.rs                 # Postgres pool + migrations runner
+    queue.rs              # jobs table, SKIP LOCKED, Agent trait
+    events.rs             # event bus + saga runtime
+    llm.rs                # LlmClient trait + Gemini + Claude impls
+    prompts.rs            # hot-reloading prompt loader
+    crawler.rs            # HTTP/headless fetch + HTML→Markdown
+    observability.rs      # tracing setup
+
+  features/
+    discovery/
+    research/
+    synthesis/
+    drafting/
+    review/
+    outreach/
+    conversations/
+    meetings/
+    intelligence/
 ```
 
-**Platform vs. feature:** platform crates are *capabilities the product needs from the world* — talk to Postgres, talk to an LLM, run a job. They don't know what Apollo does. Feature crates are *what Apollo does* — research a company, draft outreach, run a meeting. They use platform but never reach into another feature.
+**Platform vs. feature:** `platform::*` modules are *capabilities the product needs from the world* — talk to Postgres, talk to an LLM, run a job. They don't know what Apollo does. `features::*` modules are *what Apollo does* — research a company, draft outreach, run a meeting. They use platform but never reach into another feature.
 
 ---
 
 ## 3. The four boxes (inside every feature)
 
 ```
-crates/feature-<name>/src/
-  lib.rs
+src/features/<name>/
+  mod.rs
   configure.rs       # wires the four boxes for this feature
-  domain/            # types + rules. zero infra deps.
+  domain/            # types + rules. zero I/O deps.
   application/       # use cases (workflows)
-  infrastructure/    # adapters that implement domain's ports
+  infra/             # adapters that implement domain's ports
   presentation/      # HTTP routes + event subscriptions
 ```
 
@@ -62,8 +68,8 @@ crates/feature-<name>/src/
 
 Pure types and pure functions.
 
-- Allowed deps: `serde`, `thiserror`, `chrono`, `uuid`, `platform-core` (for shared `Id` types).
-- Forbidden: `reqwest`, `sqlx`, `tokio` (well — `tokio` only for `async-trait` if a port is async), `axum`, any other `feature-*` or `platform-*` crate that talks to the outside world.
+- Allowed: `serde`, `thiserror`, `chrono`, `uuid`, `async-trait` (for async port traits), `crate::platform::core`.
+- Forbidden: `sqlx`, `reqwest`, `axum`, `tokio::net`, `tokio::fs`, anything in `crate::platform::{db,llm,crawler,events,queue,prompts}`, any other feature's modules.
 - Contains: entities, value objects, port traits, domain errors, business rules.
 
 A port trait sits in `domain/ports.rs`. Example:
@@ -99,9 +105,9 @@ impl ResearchCompany {
 ```
 
 - Allowed deps: `domain`, `platform-core`, port traits from other features (if absolutely necessary — rare).
-- Forbidden: any infrastructure crate (`platform-db`, `platform-llm`, etc.). Use ports.
+- Forbidden: any I/O module (`platform::db`, `platform::llm`, etc.). Use ports.
 
-### infrastructure/ — "How do we talk to the outside world?"
+### infra/ — "How do we talk to the outside world?"
 
 Adapters that implement the ports. This is where actual SQL, HTTP, LLM SDK calls, Chromium spawns, S3 puts, and so on live.
 
@@ -134,7 +140,7 @@ async fn create_company(
 ```
 
 - Allowed deps: `application`, `domain`, `platform-core`, `axum`, request/response DTOs.
-- Forbidden: `infrastructure`. Never call an adapter directly; go through `application`.
+- Forbidden: `infra`. Never call an adapter directly; go through `application`.
 
 ---
 
@@ -223,7 +229,7 @@ async fn main() -> Result<()> {
 ## 6. The dependency rule (the only test)
 
 ```
-presentation → application → domain ← infrastructure
+presentation → application → domain ← infra
                                 ↑
                          platform-* (any layer can use platform, except domain restricts to platform-core)
 ```
@@ -259,7 +265,7 @@ If you find yourself wanting Feature A to call Feature B directly: write an even
 
 - `domain` tests: instantaneous, no async, no I/O. Just pure logic. `cargo test -p feature-research domain::` runs in milliseconds.
 - `application` tests: substitute ports with fakes (`pub struct FakeCrawlPort;`). Run the use case end-to-end without touching the network.
-- `infrastructure` tests: testcontainers Postgres, recorded HTTP fixtures, mocked LLM. These are the slow ones.
+- `infra` tests: testcontainers Postgres, recorded HTTP fixtures, mocked LLM. These are the slow ones.
 - `presentation` tests: spin up Axum with stubbed use cases; assert HTTP shapes.
 
 Each feature's tests run independently. `cargo test -p feature-outreach` doesn't touch the research crate.
@@ -283,7 +289,7 @@ When you're about to write code, ask:
 
 - "Is this a fact about my world?" → `domain/`
 - "Is this a step in a user's workflow?" → `application/`
-- "Does this talk to anything external?" → `infrastructure/`
+- "Does this talk to anything external?" → `infra/`
 - "Is this how the outside calls in?" → `presentation/`
 
 Then the file's location answers itself.

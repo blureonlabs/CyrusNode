@@ -141,7 +141,7 @@ Considered and rejected:
 
 **Context**: The initial draft used a layer-based crate split (`apollo-agents`, `apollo-db`, `apollo-llm`). Touching one feature meant editing five crates; agents had no natural home; testing the workflow required spinning up infrastructure. Layer-based grew expensive fast.
 
-**Decision**: Organize by **feature**, not by layer. Each capability is its own crate (`feature-research`, `feature-drafting`, …). Inside each crate, four boxes: `domain/`, `application/`, `infrastructure/`, `presentation/`, plus a `configure.rs`. Cross-cutting capabilities live in `platform-*` crates that any feature may use.
+**Decision**: Organize by **feature**, not by layer. Each capability is its own crate (`feature-research`, `feature-drafting`, …). Inside each crate, four boxes: `domain/`, `application/`, `infra/`, `presentation/`, plus a `configure.rs`. Cross-cutting capabilities live in `platform-*` crates that any feature may use.
 
 **The one rule**: inner code never knows about outer code.
 ```
@@ -154,7 +154,7 @@ A CI lint enforces it by scanning every `feature-*/src/domain/` for forbidden im
 **Consequences**:
 - Adding a feature = create a new folder with the same shape; no surgery on existing folders.
 - `domain` tests run in milliseconds.
-- Swapping Postgres → another DB only touches `infrastructure/` for affected features.
+- Swapping Postgres → another DB only touches `infra/` for affected features.
 - Onboarding (human or Claude Code): read one feature, you've read them all.
 - Slightly more Cargo.toml ceremony per feature; we accept it.
 

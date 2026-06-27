@@ -23,7 +23,7 @@ Out of scope: opportunity finder, ROI, WhatsApp, proposal, dashboard, sequencer.
 ### S1-T01 — Workspace scaffold (Feature-Driven DDD)
 - Create the Rust workspace per [[../02-architecture/feature-layout]].
 - Platform crates (empty libs): `platform-core`, `platform-db`, `platform-queue`, `platform-events`, `platform-llm`, `platform-prompts`, `platform-crawler`, `platform-observability`. (`platform-embedder` deferred to Sprint 5.)
-- Feature crates needed in Sprint 1: `feature-research`, `feature-drafting`. Each scaffolded with the four boxes (`domain/`, `application/`, `infrastructure/`, `presentation/`) + a `configure.rs`. Empty modules are fine.
+- Feature crates needed in Sprint 1: `feature-research`, `feature-drafting`. Each scaffolded with the four boxes (`domain/`, `application/`, `infra/`, `presentation/`) + a `configure.rs`. Empty modules are fine.
 - Binaries: `apollo-api`, `apollo-worker`, `apollo-cli`. Each gets a minimal bootstrap that calls `feature_*::configure(deps)` and merges routes/subscriptions.
 - Add a `xtask` (or shell script in `Makefile`) that enforces the dependency rule: for every `crates/feature-*/src/domain/`, fail the build if any file imports `reqwest`, `sqlx`, `axum`, `tokio::net`, or any other `feature-*`/non-`platform-core` crate.
 - Set up `cargo fmt`, `cargo clippy -D warnings`, `cargo test`, and the domain-import lint in `Makefile`. Basic GitHub Actions workflow runs `make ci`.
@@ -70,33 +70,33 @@ Out of scope: opportunity finder, ROI, WhatsApp, proposal, dashboard, sequencer.
 
 ### S1-T08 — `feature-research`: crawler adapter + port
 - Define `CrawlPort` in `feature-research/src/domain/ports.rs`.
-- Implement `HttpCrawlerAdapter` in `feature-research/src/infrastructure/`, built on `platform-crawler`.
+- Implement `HttpCrawlerAdapter` in `feature-research/src/infra/`, built on `platform-crawler`.
 - Per-host concurrency=1, 500ms delay, polite UA, robots.txt respect, sitemap parsing, BFS within budget.
 - Save HTML to local disk (object storage in V6).
 - **Done when**: crawling 5 well-known UAE SMB sites returns ≥ 10 pages each within 60s and respects `robots.txt`. `cargo test -p feature-research domain::` runs in < 200ms and touches zero I/O.
 
 ### S1-T09 — `feature-research`: extractor adapter + port
 - Define `ExtractPort` in domain.
-- Implement `MarkdownExtractorAdapter` in infrastructure (readability pass + html2md + heuristic extractors: phones via libphonenumber, emails, WhatsApp links, social).
+- Implement `MarkdownExtractorAdapter` in infra (readability pass + html2md + heuristic extractors: phones via libphonenumber, emails, WhatsApp links, social).
 - Empty-extraction guard publishes `extraction.empty` via `EventPublisher` port.
 - **Done when**: on 5 fixtures, output total words ≥ 500, site_facts.phones non-empty for ≥ 4.
 
 ### S1-T10 — `feature-research`: SEO auditor adapter (basic)
 - Define `SeoPort` in domain.
-- Implement `LighthouseSeoAdapter` in infrastructure: spawn Chromium, capture 4 scores + 5 deterministic findings (viewport, favicon, og:image, robots, sitemap).
+- Implement `LighthouseSeoAdapter` in infra: spawn Chromium, capture 4 scores + 5 deterministic findings (viewport, favicon, og:image, robots, sitemap).
 - Defer fancier findings to Sprint 2.
 - **Done when**: 5 fixtures produce scores and findings without crashing.
 
 ### S1-T11 — `feature-research`: business-intelligence agent + use case
 - Define `BizIntelPort` in domain and `BusinessSummary` value object.
-- Implement `BizIntelAgent` in infrastructure, wiring `business-summary` prompt v1 via `platform-llm` + `platform-prompts`.
+- Implement `BizIntelAgent` in infra, wiring `business-summary` prompt v1 via `platform-llm` + `platform-prompts`.
 - Implement `application/research_company.rs` use case that orchestrates crawl → extract → audit + bizintel (parallel) and assembles a `DossierBase`.
 - Compile schemas via `schemars`; write to `apollo/04-prompts/schemas/business-summary.v1.json`.
 - **Done when**: 10 fixtures run through; ≥ 9 produce ≥ 3 evidence items and non-null `what_they_sell`. The use case test substitutes fake ports for every adapter.
 
 ### S1-T12 — `feature-drafting`: email-writer agent + use case
 - Define `DraftPort` (or specifically `EmailDraftPort`) in `feature-drafting/src/domain/ports.rs`.
-- Implement `EmailWriterAgent` in infrastructure, wiring `email-writer` prompt v1 with default tone (no industry-specific yet).
+- Implement `EmailWriterAgent` in infra, wiring `email-writer` prompt v1 with default tone (no industry-specific yet).
 - Implement `application/draft_email.rs` use case that calls the port and enforces banned-phrase post-check by re-prompting on violation.
 - `feature-drafting` subscribes to `bizintel.completed` events via `presentation/subscriptions.rs` and triggers the use case.
 - **Done when**: 10 fixtures produce emails ≤ 120 words, with ≥ 2 anchors, and 0 banned phrases. End-to-end: `apollo ingest <URL>` produces `email.drafted` event.

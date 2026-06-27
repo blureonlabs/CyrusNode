@@ -2,7 +2,7 @@
 
 > One Agent trait. One context. One contract. Specialization is in the prompt, not in the framework.
 
-**Where agents live**: each agent is an **infrastructure adapter inside its feature crate**, not a centralized "agents" crate. The `Agent` trait + worker wrapper live in `platform-queue`. The crawler adapter lives in `feature-research/src/infrastructure/crawler_adapter.rs`. The email-writer agent lives in `feature-drafting/src/infrastructure/email_writer_agent.rs`. See [[feature-layout]] for the full rule.
+**Where agents live**: each agent is an **infrastructure adapter inside its feature crate**, not a centralized "agents" crate. The `Agent` trait + worker wrapper live in `platform-queue`. The crawler adapter lives in `feature-research/src/infra/crawler_adapter.rs`. The email-writer agent lives in `feature-drafting/src/infra/email_writer_agent.rs`. See [[feature-layout]] for the full rule.
 
 ---
 
