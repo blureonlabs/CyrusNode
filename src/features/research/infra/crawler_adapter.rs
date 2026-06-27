@@ -48,8 +48,24 @@ impl CrawlPort for HttpCrawlerAdapter {
             duration_ms = summary.duration_ms,
             "crawl complete"
         );
+        // Derive the on-disk dir from the first fetched page — the platform
+        // crawler keys it by correlation_id which we passed above.
+        let output_dir = summary
+            .fetched
+            .first()
+            .and_then(|p| p.html_path.parent().map(|p| p.to_path_buf()))
+            .unwrap_or_else(|| {
+                std::path::PathBuf::from("out/crawls").join(company_id.0.to_string())
+            });
+        let fetched_urls = summary
+            .fetched
+            .iter()
+            .map(|p| p.url.clone())
+            .collect::<Vec<_>>();
         Ok(CrawlResult {
             pages_fetched: summary.fetched.len() as u32,
+            output_dir,
+            fetched_urls,
         })
     }
 }

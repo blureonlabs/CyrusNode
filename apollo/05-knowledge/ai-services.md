@@ -72,6 +72,14 @@ Each entry has a stable `id` (used in agent outputs), a one-line description, an
 - **Deliverable**: prioritized fix list executed + reporting dashboard.
 - **Triggers**: Lighthouse SEO < 70; missing schema; thin content pages.
 
+## geo-audit
+- **One-liner**: Track and improve how generative AI engines (ChatGPT, Perplexity, Claude, Gemini, Google AI Overviews) describe the business vs. competitors.
+- **Effort**: medium.
+- **Deliverable**: visibility report across 3–5 engines + competitor benchmark + prioritized fix list (schema.org, authoritative citations, directory presence).
+- **Triggers**: business runs paid ads OR SEO traffic is plateauing OR competitors are visible in AI answers and they aren't.
+- **Why it's defensible**: most SMBs don't yet know this is a problem. Apollo's audit is the first time they see it.
+- **V1 implementation**: query the business + 2 competitors via 3 engine APIs (OpenAI, Anthropic, Perplexity) with 10 industry-specific queries; parse mentions + citations; output report. Future: add Gemini grounding + scraped Google AI Overviews.
+
 ---
 
 ## How to add a service

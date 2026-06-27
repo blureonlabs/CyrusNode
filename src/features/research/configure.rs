@@ -1,19 +1,27 @@
 //! Wiring file for the research feature.
 //!
-//! This is the single file that knows about all four boxes (`domain`,
-//! `application`, `infra`, `presentation`) for `research`. It builds the
-//! adapters, hands them to the use case, and exposes the routes + event
-//! subscriptions for `bootstrap.rs` to mount.
+//! Single matchmaker for the four boxes (`domain`, `application`, `infra`,
+//! `presentation`). Builds adapters from cross-cutting handles supplied by
+//! the caller (typically `bootstrap.rs` or the CLI).
 
 use std::sync::Arc;
 
 use crate::features::research::application::ResearchCompany;
 use crate::features::research::domain::{BizIntelPort, CrawlPort, ExtractPort, SeoPort};
 use crate::features::research::infra::{
-    BizIntelAgent, HttpCrawlerAdapter, LighthouseSeoAdapter, MarkdownExtractorAdapter,
+    BizIntelAgent, HttpCrawlerAdapter, MarkdownExtractorAdapter, StaticSeoAuditor,
 };
 use crate::platform::crawler::{CrawlerConfig, HttpCrawler};
 use crate::platform::events::EventSubscription;
+use crate::platform::llm::LlmClient;
+use crate::platform::prompts::PromptLoader;
+
+/// Cross-cutting handles required to construct the research feature.
+#[derive(Clone)]
+pub struct ResearchDeps {
+    pub llm: Arc<dyn LlmClient>,
+    pub prompts: PromptLoader,
+}
 
 pub struct ResearchModule {
     pub routes: axum::Router<()>,
@@ -21,15 +29,14 @@ pub struct ResearchModule {
     pub research_company: Arc<ResearchCompany>,
 }
 
-/// Wires the four boxes for the research feature. Called once from `bootstrap.rs`.
-pub fn configure() -> ResearchModule {
-    // Boot-time construction — `expect` here is acceptable per CLAUDE.md §3
-    // (no `unwrap` in prod paths; boot-time failures are intentional crashes).
+/// Wire the research feature. Boot-time `expect` is acceptable per CLAUDE.md §3.
+pub fn configure(deps: ResearchDeps) -> ResearchModule {
     let crawler = Arc::new(HttpCrawler::new(CrawlerConfig::default()).expect("crawler init"));
     let crawl: Arc<dyn CrawlPort> = Arc::new(HttpCrawlerAdapter::new(crawler));
     let extract: Arc<dyn ExtractPort> = Arc::new(MarkdownExtractorAdapter);
-    let seo: Arc<dyn SeoPort> = Arc::new(LighthouseSeoAdapter);
-    let bizintel: Arc<dyn BizIntelPort> = Arc::new(BizIntelAgent);
+    let seo: Arc<dyn SeoPort> = Arc::new(StaticSeoAuditor);
+    let bizintel: Arc<dyn BizIntelPort> =
+        Arc::new(BizIntelAgent::new(deps.llm.clone(), deps.prompts.clone()));
 
     let research_company = Arc::new(ResearchCompany::new(crawl, extract, seo, bizintel));
 

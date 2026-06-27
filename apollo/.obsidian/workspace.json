@@ -178,6 +178,8 @@
   },
   "active": "a3ffe11ba27d24db",
   "lastOpenFiles": [
+    "03-agents/geo-engine.md",
+    "05-knowledge/ai-services.md.tmp.6648.6f769ca911ba",
     "09-experiments/claude-code-usage.md",
     "02-architecture/feature-layout.md",
     "04-prompts/email-writer.md",
@@ -200,7 +202,6 @@
     "05-knowledge/industries/_template.md",
     "05-knowledge/industries",
     "05-knowledge/ai-services.md",
-    "05-knowledge",
     "10-playbooks/objection-handling.md",
     "10-playbooks/pricing.md",
     "10-playbooks/discovery.md",
@@ -212,7 +213,6 @@
     "08-development/sprint-3.md",
     "08-development/sprint-2.md",
     "08-development/sprint-1.md",
-    "07-database/er-diagram.md",
-    "07-database/schema.md"
+    "07-database/er-diagram.md"
   ]
 }

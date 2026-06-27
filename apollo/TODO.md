@@ -26,6 +26,7 @@
 - [ ] WhatsApp Writer
 - [ ] Minimal Next.js dashboard
 - [ ] Resend integration
+- [ ] **GEO Engine** — `src/features/geo/` per `apollo/03-agents/geo-engine.md`. Pairs with Opportunity Finder (GEO is itself an opportunity).
 
 ## Operator backlog (non-engineering)
 - [ ] Confirm employment contract permits freelance consulting (legal note in [[PROJECT_BIBLE]] §9).

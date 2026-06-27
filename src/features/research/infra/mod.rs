@@ -11,4 +11,4 @@ pub mod seo_runner;
 pub use bizintel_agent::BizIntelAgent;
 pub use crawler_adapter::HttpCrawlerAdapter;
 pub use extractor_adapter::MarkdownExtractorAdapter;
-pub use seo_runner::LighthouseSeoAdapter;
+pub use seo_runner::StaticSeoAuditor;

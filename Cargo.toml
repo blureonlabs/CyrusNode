@@ -83,6 +83,10 @@ scraper = "0.21"
 texting_robots = "0.2"
 quick-xml = { version = "0.36", features = ["serialize"] }
 
+# Extractor (S1-T09)
+regex = "1"
+html2md = "0.2"
+
 [dev-dependencies]
 tokio = { version = "1.41", features = ["test-util", "macros"] }
 

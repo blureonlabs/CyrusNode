@@ -10,4 +10,4 @@ pub mod presentation;
 
 mod configure;
 
-pub use configure::{configure, DraftingModule};
+pub use configure::{configure, DraftingDeps, DraftingModule};

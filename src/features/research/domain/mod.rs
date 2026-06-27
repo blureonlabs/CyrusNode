@@ -8,8 +8,8 @@
 mod dossier;
 mod ports;
 
-pub use dossier::{BusinessSummary, DossierBase};
+pub use dossier::{BusinessSummary, DossierBase, Evidence, MaturityTier};
 pub use ports::{
-    BizIntelPort, CrawlError, CrawlPort, CrawlResult, ExtractPort, ExtractedSite, SeoPort,
-    SeoReport,
+    BizIntelPort, CrawlError, CrawlPort, CrawlResult, ExtractPort, ExtractedSite, Finding, SeoPort,
+    SeoReport, Severity, SiteFacts, SocialLinks,
 };

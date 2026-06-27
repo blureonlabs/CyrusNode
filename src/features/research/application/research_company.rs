@@ -7,8 +7,10 @@ use crate::platform::core::CompanyId;
 
 /// Use case: take a company URL, run the research phase, produce a dossier base.
 ///
-/// Stub. Logic lands across S1-T08..T11. Wiring is in `infra/` adapters; this
-/// orchestrator only talks to ports.
+/// Each step calls only its port. The adapters under `infra/` do the real work;
+/// the application layer just sequences. Data is threaded through:
+/// crawl → extract reads the crawl output, seo reads the same; bizintel reads
+/// the extracted Markdown.
 pub struct ResearchCompany {
     crawl: Arc<dyn CrawlPort>,
     extract: Arc<dyn ExtractPort>,
@@ -32,10 +34,13 @@ impl ResearchCompany {
     }
 
     pub async fn run(&self, company_id: CompanyId, url: &str) -> anyhow::Result<DossierBase> {
-        let _ = self.crawl.fetch(company_id, url).await?;
-        let _ = self.extract.extract(company_id).await?;
-        let _ = self.seo.audit(company_id).await?;
-        let summary = self.bizintel.summarize(company_id).await?;
+        let crawl = self.crawl.fetch(company_id, url).await?;
+        let extracted = self.extract.extract(company_id, &crawl).await?;
+        // SEO audit is best-effort — log on failure but don't fail the dossier.
+        if let Err(e) = self.seo.audit(company_id, &crawl).await {
+            tracing::warn!(error = %e, "seo audit failed; continuing without it");
+        }
+        let summary = self.bizintel.summarize(company_id, &extracted).await?;
         Ok(DossierBase {
             company_id,
             summary,

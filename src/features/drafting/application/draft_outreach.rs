@@ -1,12 +1,13 @@
 use std::sync::Arc;
 
-use crate::features::drafting::domain::{DraftPort, EmailDraft};
+use crate::features::drafting::domain::{DraftInput, DraftPort, EmailDraft};
 use crate::platform::core::CompanyId;
 
 /// Use case: produce an outreach email draft for a researched company.
 ///
-/// Stub. Real personalization arrives in later sprint stories; this orchestrator
-/// only talks to ports.
+/// Takes a `DraftInput` constructed by the caller — typically the CLI or a
+/// saga that has access to the research dossier. Drafting domain stays
+/// research-agnostic per the no-cross-feature-imports rule.
 pub struct DraftOutreach {
     draft: Arc<dyn DraftPort>,
 }
@@ -16,7 +17,11 @@ impl DraftOutreach {
         Self { draft }
     }
 
-    pub async fn run(&self, company_id: CompanyId) -> anyhow::Result<EmailDraft> {
-        self.draft.draft_email(company_id).await
+    pub async fn run(
+        &self,
+        company_id: CompanyId,
+        input: &DraftInput,
+    ) -> anyhow::Result<EmailDraft> {
+        self.draft.draft_email(company_id, input).await
     }
 }

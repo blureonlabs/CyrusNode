@@ -8,5 +8,5 @@
 mod draft;
 mod ports;
 
-pub use draft::EmailDraft;
+pub use draft::{DraftInput, EmailDraft};
 pub use ports::DraftPort;
