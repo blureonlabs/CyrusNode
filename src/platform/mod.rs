@@ -14,3 +14,4 @@ pub mod llm;
 pub mod observability;
 pub mod prompts;
 pub mod queue;
+pub mod worker;
