@@ -30,6 +30,10 @@ pub trait OperatorPrompt: Send + Sync {
     async fn ask(&self, item: &QueueItem) -> anyhow::Result<Decision>;
     /// Open the email body in `$EDITOR`; return the edited body.
     async fn edit_body(&self, current: &str) -> anyhow::Result<String>;
+    /// Prompt for a recipient address when the item has none and the operator
+    /// wants to send. Returns `Some(addr)` if the operator types one, or
+    /// `None` to fall back to the outbox.
+    async fn request_recipient(&self, item: &QueueItem) -> anyhow::Result<Option<String>>;
 }
 
 /// Send the approved email through whatever provider the integration layer wires.

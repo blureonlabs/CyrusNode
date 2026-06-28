@@ -58,6 +58,29 @@ impl OperatorPrompt for StdinPrompter {
         })
     }
 
+    async fn request_recipient(&self, item: &QueueItem) -> anyhow::Result<Option<String>> {
+        print!(
+            "No recipient on {}. Enter email (blank → outbox): ",
+            item.url
+        );
+        std::io::stdout().flush().ok();
+        let s = tokio::task::spawn_blocking(move || -> std::io::Result<String> {
+            let mut line = String::new();
+            std::io::stdin().read_line(&mut line)?;
+            Ok(line)
+        })
+        .await??;
+        let trimmed = s.trim();
+        if trimmed.is_empty() {
+            Ok(None)
+        } else if trimmed.contains('@') {
+            Ok(Some(trimmed.to_string()))
+        } else {
+            println!("(not an email — sending to outbox)");
+            Ok(None)
+        }
+    }
+
     async fn edit_body(&self, current: &str) -> anyhow::Result<String> {
         // Write current to a temp file, spawn $EDITOR (default `vi`), read back.
         let tmp = std::env::temp_dir().join(format!("apollo-edit-{}.md", uuid::Uuid::new_v4()));

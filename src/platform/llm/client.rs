@@ -31,6 +31,22 @@ pub struct LlmRequest {
     /// (Gemini's `responseMimeType`) will honour this; others ignore it.
     #[serde(default)]
     pub json_response: bool,
+
+    // ---- Attribution fields for the cost ledger (CLAUDE.md §6). ----
+    // All optional so existing call sites compile; agents that care fill
+    // them in. The ledger writes whatever is present.
+    /// Logical agent name responsible for this call (e.g. `"bizintel"`).
+    #[serde(default)]
+    pub agent_name: Option<String>,
+    /// Prompt identifier from the prompt frontmatter (e.g. `"business-summary"`).
+    #[serde(default)]
+    pub prompt_name: Option<String>,
+    /// Prompt version from the prompt frontmatter — bumped on every prompt edit.
+    #[serde(default)]
+    pub prompt_version: Option<u32>,
+    /// Tenant / company id this call is attributed to. Stringified UUID.
+    #[serde(default)]
+    pub company_id: Option<String>,
 }
 
 /// A completion response. Token counts and cost are populated from the

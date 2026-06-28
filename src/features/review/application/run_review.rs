@@ -63,12 +63,21 @@ impl RunReview {
                     let to = match item.recipient_email.clone() {
                         Some(r) => r,
                         None => {
-                            // Fall back to outbox if no address.
-                            self.queue
-                                .record_decision(item, Decision::ApproveToOutbox)
-                                .await?;
-                            summary.approved_outbox += 1;
-                            continue;
+                            // Ask the operator inline. Persist if they provide one.
+                            match self.prompter.request_recipient(item).await? {
+                                Some(addr) => {
+                                    item.recipient_email = Some(addr.clone());
+                                    self.queue.save_edited(item).await?;
+                                    addr
+                                }
+                                None => {
+                                    self.queue
+                                        .record_decision(item, Decision::ApproveToOutbox)
+                                        .await?;
+                                    summary.approved_outbox += 1;
+                                    continue;
+                                }
+                            }
                         }
                     };
                     let _ = self

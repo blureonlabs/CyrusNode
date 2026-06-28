@@ -48,8 +48,12 @@ impl SendPort for EmailSendAdapter {
     }
 }
 
-/// Dry-run adapter. Logs what would be sent and returns a synthetic id.
-/// Used when `RESEND_API_KEY` is unset so the queue workflow still runs.
+/// Dry-run adapter. Saves what would be sent as an RFC 822 `.eml` file under
+/// `out/outbox/dry-run-<timestamp>.eml` so the operator can drag-and-drop it
+/// into Gmail / Mail.app later. Also logs to stderr for visibility.
+///
+/// Used when `RESEND_API_KEY` is unset so the queue workflow still runs in
+/// dev. CLI integrators can swap this for [`EmailSendAdapter`] when ready.
 pub struct DryRunSendAdapter;
 
 #[async_trait]
@@ -61,17 +65,22 @@ impl SendPort for DryRunSendAdapter {
         subject: &str,
         body: &str,
     ) -> anyhow::Result<String> {
-        tracing::warn!("RESEND_API_KEY missing — dry-run send");
-        println!();
-        println!("┌── DRY RUN (no RESEND_API_KEY) ──────────────────────────────");
-        println!("│ FROM    : {from}");
-        println!("│ TO      : {to}");
-        println!("│ SUBJECT : {subject}");
-        println!("├────────────────────────────────────────────────────────────");
-        for line in body.lines() {
-            println!("│ {line}");
-        }
-        println!("└────────────────────────────────────────────────────────────");
-        Ok(format!("dry-run-{}", chrono::Utc::now().timestamp()))
+        let ts = chrono::Utc::now().format("%Y%m%dT%H%M%S").to_string();
+        let id = format!("dry-run-{ts}");
+        let out_dir = std::path::PathBuf::from("out/outbox");
+        tokio::fs::create_dir_all(&out_dir).await?;
+        let path = out_dir.join(format!("{id}.eml"));
+        // Minimal RFC 822 envelope. Good enough for Gmail's "Forward as attachment"
+        // and for `mail` / `mutt` to read.
+        let eml = format!(
+            "From: {from}\r\nTo: {to}\r\nSubject: {subject}\r\nDate: {date}\r\nContent-Type: text/plain; charset=utf-8\r\n\r\n{body}\r\n",
+            date = chrono::Utc::now().to_rfc2822(),
+        );
+        tokio::fs::write(&path, eml).await?;
+        eprintln!(
+            "(dry-run) wrote {} — drag into Gmail or paste body",
+            path.display()
+        );
+        Ok(id)
     }
 }

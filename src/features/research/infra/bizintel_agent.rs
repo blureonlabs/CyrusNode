@@ -22,7 +22,7 @@ use async_trait::async_trait;
 use tracing::Instrument;
 
 use crate::features::research::domain::{
-    BizIntelPort, BusinessSummary, Evidence, ExtractedSite, MaturityTier,
+    BizIntelPort, BusinessSummary, Evidence, ExtractedSite, MaturityTier, SiteFacts,
 };
 use crate::platform::core::CompanyId;
 use crate::platform::llm::{LlmClient, LlmRequest};
@@ -65,12 +65,18 @@ impl BizIntelPort for BizIntelAgent {
         extracted: &ExtractedSite,
     ) -> anyhow::Result<BusinessSummary> {
         let span = tracing::info_span!("bizintel", company_id = %company_id.0);
-        self.summarize_inner(extracted).instrument(span).await
+        self.summarize_inner(company_id, extracted)
+            .instrument(span)
+            .await
     }
 }
 
 impl BizIntelAgent {
-    async fn summarize_inner(&self, extracted: &ExtractedSite) -> anyhow::Result<BusinessSummary> {
+    async fn summarize_inner(
+        &self,
+        company_id: CompanyId,
+        extracted: &ExtractedSite,
+    ) -> anyhow::Result<BusinessSummary> {
         let prompt = self
             .prompts
             .get(PROMPT_NAME)
@@ -86,6 +92,13 @@ impl BizIntelAgent {
         let temperature = prompt.frontmatter.temperature;
         let max_output_tokens = prompt.frontmatter.max_output_tokens;
 
+        // Attribution that every LLM call in this agent shares — built once
+        // and cloned per request. CLAUDE.md §6.
+        let agent_name = Some("bizintel".to_string());
+        let prompt_name = Some(prompt.frontmatter.name.clone());
+        let prompt_version = Some(prompt.frontmatter.version);
+        let company_id_str = Some(company_id.0.to_string());
+
         let first = LlmRequest {
             model: model.clone(),
             system: None,
@@ -93,6 +106,10 @@ impl BizIntelAgent {
             max_output_tokens,
             temperature,
             json_response: true,
+            agent_name: agent_name.clone(),
+            prompt_name: prompt_name.clone(),
+            prompt_version,
+            company_id: company_id_str.clone(),
         };
 
         let first_resp = self
@@ -119,6 +136,10 @@ impl BizIntelAgent {
                     max_output_tokens,
                     temperature,
                     json_response: true,
+                    agent_name: agent_name.clone(),
+                    prompt_name: prompt_name.clone(),
+                    prompt_version,
+                    company_id: company_id_str.clone(),
                 };
                 let retry_resp = self
                     .llm
@@ -148,6 +169,10 @@ impl BizIntelAgent {
                 max_output_tokens,
                 temperature,
                 json_response: true,
+                agent_name: agent_name.clone(),
+                prompt_name: prompt_name.clone(),
+                prompt_version,
+                company_id: company_id_str.clone(),
             };
             // Best-effort: if the retry call or its parse fails, log and keep
             // the original — we never want to fail the agent because the
@@ -234,7 +259,11 @@ fn required_fields_filled(s: &BusinessSummary) -> u8 {
 
 /// Build the `{{ context }}` string from extracted markdown + structured site facts.
 ///
-/// Markdown is truncated to [`MAX_MARKDOWN_CHARS`] with a visible marker.
+/// Prepends a compact human-readable "SITE FACTS" block (deterministic ground
+/// truth — emails, phones, schema.org types, social handles) so the LLM can
+/// anchor `what_they_sell` / `who_they_serve` on signals the markdown alone
+/// often buries. The block is intentionally tiny (~50–200 tokens); the bulk of
+/// the context is still the markdown body, capped at [`MAX_MARKDOWN_CHARS`].
 fn build_context(extracted: &ExtractedSite) -> anyhow::Result<String> {
     let md = &extracted.markdown;
     let markdown_block = if md.chars().count() > MAX_MARKDOWN_CHARS {
@@ -245,13 +274,46 @@ fn build_context(extracted: &ExtractedSite) -> anyhow::Result<String> {
         md.clone()
     };
 
-    let facts_json = serde_json::to_string_pretty(&extracted.site_facts)
-        .context("bizintel: failed to serialize site_facts")?;
+    let facts_block = render_site_facts(&extracted.site_facts);
 
     Ok(format!(
-        "## Site Facts (structured)\n\n```json\n{}\n```\n\n## Page Markdown\n\n{}",
-        facts_json, markdown_block
+        "{}\n\nWEBSITE MARKDOWN:\n{}",
+        facts_block, markdown_block
     ))
+}
+
+/// Render [`SiteFacts`] as a compact human-readable block. Missing values
+/// collapse to the literal string "none" so the LLM never sees an ambiguous
+/// blank.
+fn render_site_facts(f: &SiteFacts) -> String {
+    fn join_or_none(xs: &[String]) -> String {
+        if xs.is_empty() {
+            "none".to_string()
+        } else {
+            xs.join(", ")
+        }
+    }
+    fn opt_or_none(o: &Option<String>) -> &str {
+        o.as_deref().unwrap_or("none")
+    }
+
+    format!(
+        "SITE FACTS (extracted deterministically — these are ground truth):\n\
+         - Phones: {phones}\n\
+         - Emails: {emails}\n\
+         - WhatsApp links: {whatsapp}\n\
+         - Schema.org types: {schema}\n\
+         - Social: instagram={ig}, facebook={fb}, linkedin={li}, tiktok={tt}, youtube={yt}",
+        phones = join_or_none(&f.phones),
+        emails = join_or_none(&f.emails),
+        whatsapp = join_or_none(&f.whatsapp_links),
+        schema = join_or_none(&f.schema_org_types),
+        ig = opt_or_none(&f.social.instagram),
+        fb = opt_or_none(&f.social.facebook),
+        li = opt_or_none(&f.social.linkedin),
+        tt = opt_or_none(&f.social.tiktok),
+        yt = opt_or_none(&f.social.youtube),
+    )
 }
 
 fn parse_raw(text: &str) -> Result<RawBizIntel, serde_json::Error> {
@@ -390,6 +452,66 @@ mod tests {
                 "input {input:?} did not map as expected",
             );
         }
+    }
+
+    #[test]
+    fn build_context_includes_site_facts_block() {
+        use crate::features::research::domain::{SiteFacts, SocialLinks};
+
+        let extracted = ExtractedSite {
+            total_words: 12,
+            markdown: "Hello from the about page.".into(),
+            site_facts: SiteFacts {
+                language: Some("en".into()),
+                phones: vec!["+971-50-1234567".into()],
+                emails: vec!["info@example.com".into(), "sales@example.com".into()],
+                whatsapp_links: vec!["https://wa.me/9710501234567".into()],
+                social: SocialLinks {
+                    instagram: Some("https://instagram.com/example".into()),
+                    facebook: None,
+                    linkedin: Some("https://linkedin.com/company/example".into()),
+                    tiktok: None,
+                    youtube: None,
+                },
+                schema_org_types: vec!["LocalBusiness".into()],
+            },
+        };
+
+        let ctx = build_context(&extracted).expect("builds");
+        // Header marker is present.
+        assert!(
+            ctx.contains("SITE FACTS (extracted deterministically"),
+            "expected SITE FACTS header in context, got:\n{ctx}"
+        );
+        // Values flow through verbatim.
+        assert!(ctx.contains("+971-50-1234567"));
+        assert!(ctx.contains("info@example.com, sales@example.com"));
+        assert!(ctx.contains("Schema.org types: LocalBusiness"));
+        assert!(ctx.contains("instagram=https://instagram.com/example"));
+        // Empty optional collapses to "none".
+        assert!(ctx.contains("facebook=none"));
+        // Markdown body still appears after the facts block.
+        assert!(ctx.contains("WEBSITE MARKDOWN:"));
+        assert!(ctx.contains("Hello from the about page."));
+        // SITE FACTS block precedes the markdown.
+        let facts_idx = ctx.find("SITE FACTS").expect("facts header");
+        let md_idx = ctx.find("WEBSITE MARKDOWN").expect("markdown header");
+        assert!(facts_idx < md_idx, "facts must precede markdown body");
+    }
+
+    #[test]
+    fn build_context_collapses_to_none_when_facts_empty() {
+        let extracted = ExtractedSite {
+            total_words: 3,
+            markdown: "Just markdown.".into(),
+            site_facts: crate::features::research::domain::SiteFacts::default(),
+        };
+        let ctx = build_context(&extracted).expect("builds");
+        assert!(ctx.contains("Phones: none"));
+        assert!(ctx.contains("Emails: none"));
+        assert!(ctx.contains("WhatsApp links: none"));
+        assert!(ctx.contains("Schema.org types: none"));
+        assert!(ctx.contains("instagram=none"));
     }
 
     #[test]

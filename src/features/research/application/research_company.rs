@@ -41,9 +41,14 @@ impl ResearchCompany {
             tracing::warn!(error = %e, "seo audit failed; continuing without it");
         }
         let summary = self.bizintel.summarize(company_id, &extracted).await?;
+        // Capture site_facts before `extracted` is dropped so downstream
+        // consumers (operator CLI, queue, drafting) can read deterministic
+        // emails/phones/socials without re-scraping.
+        let site_facts = extracted.site_facts.clone();
         Ok(DossierBase {
             company_id,
             summary,
+            site_facts,
         })
     }
 }

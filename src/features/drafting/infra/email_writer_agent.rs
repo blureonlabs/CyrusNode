@@ -250,7 +250,7 @@ impl DraftPort for EmailWriterAgent {
         let base_user = prompt.render(&vars);
 
         // ---- First attempt. ----
-        let raw = self.call_llm(&prompt, &base_user).await?;
+        let raw = self.call_llm(&prompt, &base_user, company_id).await?;
         let parsed = parse_raw_email(&raw.text)?;
         let (subject, body, anchor_texts) = explode(parsed)?;
 
@@ -290,7 +290,7 @@ impl DraftPort for EmailWriterAgent {
             "email-writer first draft rejected; retrying once"
         );
         let retry_user = format!("{}\n\n## Retry instruction\n{}\n", base_user, nudge);
-        let raw2 = self.call_llm(&prompt, &retry_user).await?;
+        let raw2 = self.call_llm(&prompt, &retry_user, company_id).await?;
         let parsed2 = parse_raw_email(&raw2.text)?;
         let (subject2, body2, anchors2) = explode(parsed2)?;
 
@@ -327,6 +327,7 @@ impl EmailWriterAgent {
         &self,
         prompt: &crate::platform::prompts::Prompt,
         user: &str,
+        company_id: CompanyId,
     ) -> anyhow::Result<crate::platform::llm::LlmResponse> {
         let req = LlmRequest {
             model: prompt.frontmatter.model.clone(),
@@ -335,6 +336,11 @@ impl EmailWriterAgent {
             max_output_tokens: prompt.frontmatter.max_output_tokens,
             temperature: prompt.frontmatter.temperature,
             json_response: true,
+            // Attribution for the cost ledger — CLAUDE.md §6.
+            agent_name: Some("email-writer".to_string()),
+            prompt_name: Some(prompt.frontmatter.name.clone()),
+            prompt_version: Some(prompt.frontmatter.version),
+            company_id: Some(company_id.0.to_string()),
         };
         self.llm
             .complete(req)
