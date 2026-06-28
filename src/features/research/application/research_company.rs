@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use crate::features::research::domain::{
-    BizIntelPort, CrawlPort, DossierBase, ExtractPort, SeoPort,
+    BizIntelPort, CrawlPort, DossierBase, ExtractPort, IndustryHint, SeoPort,
 };
 use crate::platform::core::CompanyId;
 
@@ -19,6 +19,7 @@ pub struct ResearchCompany {
 }
 
 impl ResearchCompany {
+    /// Construct the use case from its four ports.
     pub fn new(
         crawl: Arc<dyn CrawlPort>,
         extract: Arc<dyn ExtractPort>,
@@ -33,14 +34,27 @@ impl ResearchCompany {
         }
     }
 
-    pub async fn run(&self, company_id: CompanyId, url: &str) -> anyhow::Result<DossierBase> {
+    /// Research the company at `url` and return a [`DossierBase`].
+    ///
+    /// `industry`, when `Some`, is forwarded as a soft hint to the business
+    /// intelligence agent. It does not alter the crawl, extraction, or SEO
+    /// audit phases — only the bizintel summarization.
+    pub async fn run(
+        &self,
+        company_id: CompanyId,
+        url: &str,
+        industry: Option<&IndustryHint>,
+    ) -> anyhow::Result<DossierBase> {
         let crawl = self.crawl.fetch(company_id, url).await?;
         let extracted = self.extract.extract(company_id, &crawl).await?;
         // SEO audit is best-effort — log on failure but don't fail the dossier.
         if let Err(e) = self.seo.audit(company_id, &crawl).await {
             tracing::warn!(error = %e, "seo audit failed; continuing without it");
         }
-        let summary = self.bizintel.summarize(company_id, &extracted).await?;
+        let summary = self
+            .bizintel
+            .summarize(company_id, &extracted, industry)
+            .await?;
         // Capture site_facts before `extracted` is dropped so downstream
         // consumers (operator CLI, queue, drafting) can read deterministic
         // emails/phones/socials without re-scraping.

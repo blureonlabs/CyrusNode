@@ -22,7 +22,7 @@ use async_trait::async_trait;
 use tracing::Instrument;
 
 use crate::features::research::domain::{
-    BizIntelPort, BusinessSummary, Evidence, ExtractedSite, MaturityTier, SiteFacts,
+    BizIntelPort, BusinessSummary, Evidence, ExtractedSite, IndustryHint, MaturityTier, SiteFacts,
 };
 use crate::platform::core::CompanyId;
 use crate::platform::llm::{LlmClient, LlmRequest};
@@ -63,9 +63,10 @@ impl BizIntelPort for BizIntelAgent {
         &self,
         company_id: CompanyId,
         extracted: &ExtractedSite,
+        industry_hint: Option<&IndustryHint>,
     ) -> anyhow::Result<BusinessSummary> {
         let span = tracing::info_span!("bizintel", company_id = %company_id.0);
-        self.summarize_inner(company_id, extracted)
+        self.summarize_inner(company_id, extracted, industry_hint)
             .instrument(span)
             .await
     }
@@ -76,6 +77,7 @@ impl BizIntelAgent {
         &self,
         company_id: CompanyId,
         extracted: &ExtractedSite,
+        industry_hint: Option<&IndustryHint>,
     ) -> anyhow::Result<BusinessSummary> {
         let prompt = self
             .prompts
@@ -83,7 +85,7 @@ impl BizIntelAgent {
             .await
             .ok_or_else(|| anyhow!("prompt '{}' not loaded", PROMPT_NAME))?;
 
-        let context = build_context(extracted)?;
+        let context = build_context(extracted, industry_hint)?;
         let mut vars = HashMap::new();
         vars.insert("context", context);
         let rendered = prompt.render(&vars);
@@ -257,14 +259,26 @@ fn required_fields_filled(s: &BusinessSummary) -> u8 {
     a + b
 }
 
+/// Hard cap on the rendered length of any single industry hint bullet. Keeps
+/// the prepended block small even if a playbook ships a verbose pain entry.
+const MAX_HINT_BULLET_CHARS: usize = 120;
+
 /// Build the `{{ context }}` string from extracted markdown + structured site facts.
 ///
-/// Prepends a compact human-readable "SITE FACTS" block (deterministic ground
-/// truth — emails, phones, schema.org types, social handles) so the LLM can
-/// anchor `what_they_sell` / `who_they_serve` on signals the markdown alone
+/// Optionally prepends an "INDUSTRY CONTEXT" block when the caller supplies an
+/// [`IndustryHint`]. The block lists the operator-curated typical pains and
+/// AI opportunities for the targeted industry as a soft hint — the explicit
+/// instruction in the block tells the LLM not to treat them as a constraint.
+///
+/// Then prepends a compact human-readable "SITE FACTS" block (deterministic
+/// ground truth — emails, phones, schema.org types, social handles) so the LLM
+/// can anchor `what_they_sell` / `who_they_serve` on signals the markdown alone
 /// often buries. The block is intentionally tiny (~50–200 tokens); the bulk of
 /// the context is still the markdown body, capped at [`MAX_MARKDOWN_CHARS`].
-fn build_context(extracted: &ExtractedSite) -> anyhow::Result<String> {
+fn build_context(
+    extracted: &ExtractedSite,
+    industry_hint: Option<&IndustryHint>,
+) -> anyhow::Result<String> {
     let md = &extracted.markdown;
     let markdown_block = if md.chars().count() > MAX_MARKDOWN_CHARS {
         // Truncate by chars (not bytes) to keep UTF-8 boundaries safe.
@@ -276,10 +290,42 @@ fn build_context(extracted: &ExtractedSite) -> anyhow::Result<String> {
 
     let facts_block = render_site_facts(&extracted.site_facts);
 
-    Ok(format!(
-        "{}\n\nWEBSITE MARKDOWN:\n{}",
-        facts_block, markdown_block
-    ))
+    let body = format!("{}\n\nWEBSITE MARKDOWN:\n{}", facts_block, markdown_block);
+
+    Ok(match industry_hint {
+        Some(hint) => format!("{}\n\n{}", render_industry_hint(hint), body),
+        None => body,
+    })
+}
+
+/// Render an [`IndustryHint`] as a compact human-readable block. Each bullet
+/// is capped at [`MAX_HINT_BULLET_CHARS`] so a verbose playbook entry cannot
+/// blow up the prompt budget. Empty bullet lists collapse to "none" so the
+/// LLM never sees an ambiguous blank.
+fn render_industry_hint(hint: &IndustryHint) -> String {
+    fn bullets_or_none(xs: &[String]) -> String {
+        if xs.is_empty() {
+            return "  - none".to_string();
+        }
+        xs.iter()
+            .map(|b| {
+                let trimmed = b.trim();
+                let capped: String = trimmed.chars().take(MAX_HINT_BULLET_CHARS).collect();
+                format!("  - {}", capped)
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    format!(
+        "INDUSTRY CONTEXT (operator-provided — use as a soft hint, NOT as a constraint):\n\
+         - Industry: {name}\n\
+         - Typical pains in this industry:\n{pains}\n\
+         - Typical AI opportunities:\n{opps}",
+        name = hint.display_name,
+        pains = bullets_or_none(&hint.typical_pains),
+        opps = bullets_or_none(&hint.typical_opportunities),
+    )
 }
 
 /// Render [`SiteFacts`] as a compact human-readable block. Missing values
@@ -477,7 +523,7 @@ mod tests {
             },
         };
 
-        let ctx = build_context(&extracted).expect("builds");
+        let ctx = build_context(&extracted, None).expect("builds");
         // Header marker is present.
         assert!(
             ctx.contains("SITE FACTS (extracted deterministically"),
@@ -506,7 +552,7 @@ mod tests {
             markdown: "Just markdown.".into(),
             site_facts: crate::features::research::domain::SiteFacts::default(),
         };
-        let ctx = build_context(&extracted).expect("builds");
+        let ctx = build_context(&extracted, None).expect("builds");
         assert!(ctx.contains("Phones: none"));
         assert!(ctx.contains("Emails: none"));
         assert!(ctx.contains("WhatsApp links: none"));
@@ -672,7 +718,7 @@ mod tests {
         };
 
         let summary = agent
-            .summarize(CompanyId(uuid::Uuid::nil()), &extracted)
+            .summarize(CompanyId(uuid::Uuid::nil()), &extracted, None)
             .await
             .expect("summarize ok");
 
@@ -688,5 +734,68 @@ mod tests {
             captured[1].contains("These two fields are REQUIRED"),
             "second call must include the completion-retry suffix"
         );
+    }
+
+    /// When the caller provides an [`IndustryHint`], the rendered context must
+    /// contain the "INDUSTRY CONTEXT" header, the display name, and at least
+    /// one of the typical pains, and the block must precede SITE FACTS.
+    #[test]
+    fn prompt_context_includes_industry_hint_when_present() {
+        let extracted = ExtractedSite {
+            total_words: 42,
+            markdown: "Limousine fleet in Dubai.".into(),
+            site_facts: crate::features::research::domain::SiteFacts::default(),
+        };
+        let hint = IndustryHint {
+            key: "limousine_uae".into(),
+            display_name: "Limousine service (UAE)".into(),
+            typical_pains: vec![
+                "Manual WhatsApp dispatching across drivers and clients".into(),
+                "No-shows and last-minute cancellations".into(),
+            ],
+            typical_opportunities: vec![
+                "ai_receptionist — answers booking enquiries 24/7 in EN/AR".into(),
+            ],
+        };
+
+        let ctx = build_context(&extracted, Some(&hint)).expect("builds");
+
+        assert!(
+            ctx.contains("INDUSTRY CONTEXT (operator-provided"),
+            "expected INDUSTRY CONTEXT header, got:\n{ctx}"
+        );
+        assert!(ctx.contains("Industry: Limousine service (UAE)"));
+        assert!(
+            ctx.contains("Manual WhatsApp dispatching"),
+            "expected at least one typical pain to appear verbatim"
+        );
+        assert!(ctx.contains("ai_receptionist"));
+        // Soft-hint instruction must be present so the LLM does not treat
+        // the bullets as constraints.
+        assert!(ctx.contains("soft hint, NOT as a constraint"));
+        // Ordering: industry block precedes SITE FACTS, which precedes markdown.
+        let industry_idx = ctx.find("INDUSTRY CONTEXT").expect("industry header");
+        let facts_idx = ctx.find("SITE FACTS").expect("facts header");
+        let md_idx = ctx.find("WEBSITE MARKDOWN").expect("markdown header");
+        assert!(industry_idx < facts_idx);
+        assert!(facts_idx < md_idx);
+    }
+
+    /// Without an industry hint, the rendered context must NOT contain the
+    /// "INDUSTRY CONTEXT" section — the behavior matches the original layout.
+    #[test]
+    fn prompt_context_omits_industry_section_when_none() {
+        let extracted = ExtractedSite {
+            total_words: 10,
+            markdown: "Plain markdown.".into(),
+            site_facts: crate::features::research::domain::SiteFacts::default(),
+        };
+        let ctx = build_context(&extracted, None).expect("builds");
+        assert!(
+            !ctx.contains("INDUSTRY CONTEXT"),
+            "no hint → no INDUSTRY CONTEXT section, got:\n{ctx}"
+        );
+        assert!(ctx.contains("SITE FACTS"));
+        assert!(ctx.contains("WEBSITE MARKDOWN"));
     }
 }

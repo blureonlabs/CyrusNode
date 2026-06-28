@@ -24,6 +24,7 @@ use apollo::features::research::application::ResearchCompany;
 use apollo::features::research::infra::{
     BizIntelAgent, HttpCrawlerAdapter, MarkdownExtractorAdapter, StaticSeoAuditor,
 };
+use apollo::features::research::make_industry_hint;
 use apollo::features::review::application::RunReview;
 use apollo::features::review::domain::{QueueItem, SendPort};
 use apollo::features::review::infra::{
@@ -132,6 +133,22 @@ enum Command {
 
     /// List loaded industry playbooks from `apollo/05-knowledge/industries/`.
     Industries,
+
+    /// Remove old crawl artifacts. Defaults to crawls older than 7 days.
+    Clean {
+        /// Older-than threshold in days. Default 7.
+        #[arg(long, default_value_t = 7)]
+        older_than_days: i64,
+        /// If true, print what would be deleted without removing anything.
+        #[arg(long)]
+        dry_run: bool,
+        /// Also clean sent/rejected dossiers older than the threshold.
+        #[arg(long)]
+        include_processed: bool,
+    },
+
+    /// At-a-glance dashboard. No flags.
+    Status,
 }
 
 #[tokio::main]
@@ -213,6 +230,16 @@ async fn main() -> Result<()> {
         Command::Industries => {
             run_industries().await?;
         }
+        Command::Clean {
+            older_than_days,
+            dry_run,
+            include_processed,
+        } => {
+            run_clean(older_than_days, dry_run, include_processed).await?;
+        }
+        Command::Status => {
+            run_status().await?;
+        }
     }
     Ok(())
 }
@@ -245,6 +272,10 @@ async fn run_industries() -> Result<()> {
 struct BatchContext {
     research: ResearchCompany,
     drafter: DraftOutreach,
+    /// Playbook loader, shared with drafting. Used to convert an industry key
+    /// into an [`apollo::features::research::domain::IndustryHint`] per call
+    /// so the bizintel agent can see typical pains + AI opportunities.
+    playbooks: PlaybookLoader,
     out_dir: PathBuf,
 }
 
@@ -279,6 +310,7 @@ impl BatchContext {
         Ok(Self {
             research,
             drafter,
+            playbooks,
             out_dir: PathBuf::from("out/dossiers"),
         })
     }
@@ -295,7 +327,11 @@ impl BatchContext {
         let company_id = CompanyId(uuid::Uuid::new_v4());
 
         eprintln!("==> researching {url}...");
-        let dossier = self.research.run(company_id, url).await?;
+        let industry_hint = make_industry_hint(&self.playbooks, industry).await;
+        let dossier = self
+            .research
+            .run(company_id, url, industry_hint.as_ref())
+            .await?;
 
         eprintln!("==> drafting email...");
         let anchors = dossier
@@ -696,6 +732,344 @@ fn truncate(s: &str, max: usize) -> String {
         out.push('…');
         out
     }
+}
+
+/// Human-readable byte size: 1.23 MB / 456 KB / 89 B. Uses base-1024 units.
+fn human_bytes(n: u64) -> String {
+    const KB: u64 = 1024;
+    const MB: u64 = 1024 * KB;
+    const GB: u64 = 1024 * MB;
+    if n >= GB {
+        format!("{:.2} GB", n as f64 / GB as f64)
+    } else if n >= MB {
+        format!("{:.2} MB", n as f64 / MB as f64)
+    } else if n >= KB {
+        format!("{:.2} KB", n as f64 / KB as f64)
+    } else {
+        format!("{} B", n)
+    }
+}
+
+/// Recursively sum the size of all regular files under `path`. Symlinks and
+/// errors on individual entries are silently skipped so a single unreadable
+/// child does not break the whole walk.
+fn dir_size(path: &std::path::Path) -> std::io::Result<u64> {
+    let mut total: u64 = 0;
+    let meta = std::fs::symlink_metadata(path)?;
+    if meta.file_type().is_file() {
+        return Ok(meta.len());
+    }
+    if !meta.file_type().is_dir() {
+        return Ok(0);
+    }
+    let entries = match std::fs::read_dir(path) {
+        Ok(e) => e,
+        Err(_) => return Ok(0),
+    };
+    for entry in entries.flatten() {
+        let p = entry.path();
+        match std::fs::symlink_metadata(&p) {
+            Ok(m) if m.file_type().is_file() => total += m.len(),
+            Ok(m) if m.file_type().is_dir() => {
+                total += dir_size(&p).unwrap_or(0);
+            }
+            _ => {}
+        }
+    }
+    Ok(total)
+}
+
+/// Direct children of `root` whose modification time is older than `threshold`.
+/// Returns `(path, size_bytes, age)` tuples. Missing `root` yields an empty vec.
+///
+/// Only the top-level children are inspected — the cleanup is deliberately
+/// shallow so a stray nested file does not pin an entire correlation-id dir.
+async fn list_aged_entries(
+    root: &std::path::Path,
+    threshold: std::time::Duration,
+) -> Result<Vec<(PathBuf, u64, std::time::Duration)>> {
+    let mut out: Vec<(PathBuf, u64, std::time::Duration)> = Vec::new();
+    if !root.exists() {
+        return Ok(out);
+    }
+    let mut rd = tokio::fs::read_dir(root).await?;
+    let now = std::time::SystemTime::now();
+    while let Some(entry) = rd.next_entry().await? {
+        let path = entry.path();
+        let meta = match entry.metadata().await {
+            Ok(m) => m,
+            Err(_) => continue,
+        };
+        let mtime = match meta.modified() {
+            Ok(t) => t,
+            Err(_) => continue,
+        };
+        let age = match now.duration_since(mtime) {
+            Ok(a) => a,
+            Err(_) => continue, // mtime in the future — skip
+        };
+        if age < threshold {
+            continue;
+        }
+        let size = if meta.is_dir() {
+            dir_size(&path).unwrap_or(0)
+        } else {
+            meta.len()
+        };
+        out.push((path, size, age));
+    }
+    Ok(out)
+}
+
+/// Convert a `Duration` into a whole-day count for display purposes.
+fn duration_days(d: std::time::Duration) -> u64 {
+    d.as_secs() / 86_400
+}
+
+/// Remove old crawl artifacts. Walks `out/crawls/` (correlation-id dirs) and,
+/// when `--include-processed` is set, `out/sent/` + `out/rejected/`. Never
+/// touches `out/dossiers/` (pending review) or `out/outbox/` (waiting to send).
+///
+/// Errors propagate from the filesystem walk or from a delete. Missing
+/// directories are treated as empty — there is nothing to clean.
+async fn run_clean(older_than_days: i64, dry_run: bool, include_processed: bool) -> Result<()> {
+    let days = older_than_days.max(0) as u64;
+    let threshold = std::time::Duration::from_secs(days * 86_400);
+
+    let mut targets: Vec<(PathBuf, u64, std::time::Duration, bool /* is_dir */)> = Vec::new();
+
+    // out/crawls/<correlation-id>/ — always eligible.
+    let crawls_root = std::path::Path::new("out/crawls");
+    for (path, size, age) in list_aged_entries(crawls_root, threshold).await? {
+        let is_dir = path.is_dir();
+        targets.push((path, size, age, is_dir));
+    }
+
+    if include_processed {
+        for root in ["out/sent", "out/rejected"] {
+            let root_path = std::path::Path::new(root);
+            for (path, size, age) in list_aged_entries(root_path, threshold).await? {
+                if path.is_file()
+                    && path
+                        .extension()
+                        .and_then(|s| s.to_str())
+                        .is_some_and(|s| s.eq_ignore_ascii_case("json"))
+                {
+                    targets.push((path, size, age, false));
+                }
+            }
+        }
+    }
+
+    if targets.is_empty() {
+        println!("Nothing to clean (threshold: {days} days).");
+        return Ok(());
+    }
+
+    if dry_run {
+        for (path, size, age) in targets
+            .iter()
+            .map(|(p, s, a, _)| (p, s, a))
+            .collect::<Vec<_>>()
+        {
+            println!(
+                "[would delete] {} ({}, {} days)",
+                path.display(),
+                human_bytes(*size),
+                duration_days(*age),
+            );
+        }
+        return Ok(());
+    }
+
+    let mut deleted = 0usize;
+    let mut freed: u64 = 0;
+    for (path, size, _age, is_dir) in targets {
+        let result = if is_dir {
+            tokio::fs::remove_dir_all(&path).await
+        } else {
+            tokio::fs::remove_file(&path).await
+        };
+        match result {
+            Ok(()) => {
+                deleted += 1;
+                freed = freed.saturating_add(size);
+            }
+            Err(e) => {
+                tracing::warn!(path = %path.display(), error = %e, "failed to delete");
+            }
+        }
+    }
+    println!("✓ deleted {} items, freed {}", deleted, human_bytes(freed));
+    Ok(())
+}
+
+/// Count direct children of `path` matching `predicate`. Returns 0 if the
+/// directory is missing or unreadable — best-effort by design.
+async fn count_children<F>(path: &std::path::Path, predicate: F) -> usize
+where
+    F: Fn(&std::fs::FileType, &std::path::Path) -> bool,
+{
+    if !path.exists() {
+        return 0;
+    }
+    let mut rd = match tokio::fs::read_dir(path).await {
+        Ok(rd) => rd,
+        Err(_) => return 0,
+    };
+    let mut n = 0usize;
+    while let Ok(Some(entry)) = rd.next_entry().await {
+        if let Ok(ft) = entry.file_type().await {
+            if predicate(&ft, &entry.path()) {
+                n += 1;
+            }
+        }
+    }
+    n
+}
+
+/// At-a-glance dashboard. Counts queue files, crawl runs, knowledge artifacts,
+/// and today's LLM spend. Every section is best-effort: missing directories
+/// print `0` (or `not yet`) rather than panicking.
+async fn run_status() -> Result<()> {
+    let now = chrono::Utc::now();
+
+    // Queue counts. Dossiers/sent/rejected are *.json files; outbox is *.eml.
+    let pending = count_children(std::path::Path::new("out/dossiers"), |ft, p| {
+        ft.is_file()
+            && p.extension()
+                .and_then(|s| s.to_str())
+                .is_some_and(|s| s.eq_ignore_ascii_case("json"))
+    })
+    .await;
+    let outbox = count_children(std::path::Path::new("out/outbox"), |ft, p| {
+        ft.is_file()
+            && p.extension()
+                .and_then(|s| s.to_str())
+                .is_some_and(|s| s.eq_ignore_ascii_case("eml"))
+    })
+    .await;
+    let sent = count_children(std::path::Path::new("out/sent"), |ft, p| {
+        ft.is_file()
+            && p.extension()
+                .and_then(|s| s.to_str())
+                .is_some_and(|s| s.eq_ignore_ascii_case("json"))
+    })
+    .await;
+    let rejected = count_children(std::path::Path::new("out/rejected"), |ft, p| {
+        ft.is_file()
+            && p.extension()
+                .and_then(|s| s.to_str())
+                .is_some_and(|s| s.eq_ignore_ascii_case("json"))
+    })
+    .await;
+
+    // Crawl runs — direct child dirs of out/crawls/.
+    let crawls_root = std::path::Path::new("out/crawls");
+    let crawl_runs = count_children(crawls_root, |ft, _| ft.is_dir() || ft.is_symlink()).await;
+    let crawl_size = if crawls_root.exists() {
+        dir_size(crawls_root).unwrap_or(0)
+    } else {
+        0
+    };
+
+    // Today's LLM totals (window pattern matches run_cost — 24h rolling).
+    let mut llm_calls: u64 = 0;
+    let mut input_tokens: u64 = 0;
+    let mut output_tokens: u64 = 0;
+    let mut spend_usd: f64 = 0.0;
+    let mut llm_seen = false;
+    let ledger_path = std::path::Path::new("out/llm_calls.jsonl");
+    if ledger_path.exists() {
+        llm_seen = true;
+        let cutoff = now - chrono::Duration::days(1);
+        let body = tokio::fs::read_to_string(ledger_path)
+            .await
+            .unwrap_or_default();
+        for (idx, line) in body.lines().enumerate() {
+            if line.trim().is_empty() {
+                continue;
+            }
+            let rec: LlmCallRecord = match serde_json::from_str(line) {
+                Ok(r) => r,
+                Err(e) => {
+                    tracing::warn!(
+                        line_number = idx + 1,
+                        error = %e,
+                        "skipping malformed ledger line",
+                    );
+                    continue;
+                }
+            };
+            if rec.occurred_at < cutoff {
+                continue;
+            }
+            llm_calls += 1;
+            input_tokens += rec.input_tokens as u64;
+            output_tokens += rec.output_tokens as u64;
+            spend_usd += rec.cost_usd;
+        }
+    }
+
+    // Knowledge counts. Both loaders return empty registries on missing dir,
+    // so failures here are real bugs worth surfacing rather than swallowing.
+    let prompts_count = match PromptLoader::load("apollo/04-prompts").await {
+        Ok(p) => p.names().await.len(),
+        Err(e) => {
+            tracing::warn!(error = %e, "could not load prompts");
+            0
+        }
+    };
+    let (playbook_count, playbook_keys): (usize, Vec<String>) =
+        match PlaybookLoader::load("apollo/05-knowledge/industries").await {
+            Ok(p) => {
+                let keys = p.keys().await;
+                (keys.len(), keys)
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "could not load playbooks");
+                (0, Vec::new())
+            }
+        };
+
+    let sep: String = "─".repeat(60);
+    println!("Apollo status — {}", now.to_rfc3339());
+    println!("{}", sep);
+    println!("Queue");
+    println!("  Pending review  : {pending} dossiers");
+    println!("  Outbox          : {outbox} .eml files");
+    println!("  Sent            : {sent}");
+    println!("  Rejected        : {rejected}");
+    println!("Crawls");
+    if crawls_root.exists() {
+        println!(
+            "  Saved runs      : {crawl_runs} ({} on disk)",
+            human_bytes(crawl_size)
+        );
+    } else {
+        println!("  Saved runs      : not yet");
+    }
+    println!("Knowledge");
+    println!("  Prompts loaded  : {prompts_count}");
+    if playbook_count == 0 {
+        println!("  Playbooks       : 0");
+    } else {
+        println!(
+            "  Playbooks       : {playbook_count} ({})",
+            playbook_keys.join(", ")
+        );
+    }
+    println!("Cost (today)");
+    if llm_seen {
+        println!("  LLM calls       : {llm_calls}");
+        println!("  Input tokens    : {}", format_tokens(input_tokens));
+        println!("  Output tokens   : {}", format_tokens(output_tokens));
+        println!("  Spend           : {}", format_cost(spend_usd));
+    } else {
+        println!("  LLM calls       : not yet");
+    }
+    println!("{}", sep);
+    Ok(())
 }
 
 #[cfg(test)]

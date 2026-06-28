@@ -141,7 +141,7 @@ mod tests {
             .get("business-summary")
             .await
             .expect("business-summary present");
-        assert_eq!(bs.frontmatter.version, 1);
+        assert_eq!(bs.frontmatter.version, 2);
         assert_eq!(bs.frontmatter.max_output_tokens, 4000);
 
         let names = loader.names().await;

@@ -9,6 +9,25 @@ use thiserror::Error;
 use super::BusinessSummary;
 use crate::platform::core::CompanyId;
 
+/// Operator-provided industry hint passed alongside a [`BizIntelPort::summarize`]
+/// call. It is a soft signal, not a constraint: the agent uses it to steer
+/// classification but should still defer to evidence found in the site itself.
+///
+/// Decoupled from `platform::knowledge::IndustryPlaybook` on purpose — domain
+/// must stay I/O-free, so the CLI / wiring layer converts the playbook into
+/// this thin DTO before handing it down.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct IndustryHint {
+    /// Stable key (e.g. `dental_clinic`, `limousine_uae`).
+    pub key: String,
+    /// Human-friendly name for the rendered prompt block.
+    pub display_name: String,
+    /// Bullet list of common pains observed in this industry.
+    pub typical_pains: Vec<String>,
+    /// Bullet list of AI opportunities that usually fit this industry.
+    pub typical_opportunities: Vec<String>,
+}
+
 #[derive(Debug, Error)]
 pub enum CrawlError {
     #[error("unreachable: {0}")]
@@ -111,9 +130,16 @@ pub trait SeoPort: Send + Sync {
 
 #[async_trait]
 pub trait BizIntelPort: Send + Sync {
+    /// Summarize the extracted site into a structured [`BusinessSummary`].
+    ///
+    /// `industry_hint`, when `Some`, supplies operator-curated context (typical
+    /// pains and AI opportunities for the targeted industry). Implementations
+    /// must treat it as a soft hint, not a constraint — evidence from the
+    /// extracted site still wins.
     async fn summarize(
         &self,
         company_id: CompanyId,
         extracted: &ExtractedSite,
+        industry_hint: Option<&IndustryHint>,
     ) -> anyhow::Result<BusinessSummary>;
 }

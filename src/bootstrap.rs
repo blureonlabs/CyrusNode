@@ -46,6 +46,7 @@ pub async fn build() -> Result<Bootstrap> {
     let research = research::configure(ResearchDeps {
         llm: gemini.clone(),
         prompts: prompts.clone(),
+        playbooks: playbooks.clone(),
     });
     let drafting = drafting::configure(DraftingDeps {
         llm: gemini.clone(),

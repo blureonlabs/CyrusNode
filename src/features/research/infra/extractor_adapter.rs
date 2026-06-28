@@ -121,6 +121,7 @@ struct ExtractorRegexes {
     phone: Regex,
     email: Regex,
     whatsapp: Regex,
+    cloudflare_email: Regex,
     instagram: Regex,
     facebook: Regex,
     linkedin: Regex,
@@ -138,6 +139,10 @@ impl ExtractorRegexes {
         let whatsapp =
             Regex::new(r#"(?i)https?://(?:wa\.me|(?:api\.|chat\.)?whatsapp\.com)/[^\s"'<>]+"#)
                 .expect("static regex: whatsapp");
+        // Cloudflare email-protection link: `/cdn-cgi/l/email-protection#<hex>`.
+        // The hex payload is XOR-encoded; see `decode_cloudflare_email`.
+        let cloudflare_email = Regex::new(r#"(?i)/cdn-cgi/l/email-protection#([0-9a-f]+)"#)
+            .expect("static regex: cloudflare_email");
         let instagram = Regex::new(r#"(?i)https?://(?:www\.)?instagram\.com/[^\s"'<>?#]+"#)
             .expect("static regex: instagram");
         let facebook = Regex::new(r#"(?i)https?://(?:www\.|m\.)?facebook\.com/[^\s"'<>?#]+"#)
@@ -154,6 +159,7 @@ impl ExtractorRegexes {
             phone,
             email,
             whatsapp,
+            cloudflare_email,
             instagram,
             facebook,
             linkedin,
@@ -436,11 +442,32 @@ fn harvest_regex_facts(raw_html: &str, r: &ExtractorRegexes, acc: &mut SiteAccum
     }
 
     for m in r.email.find_iter(raw_html) {
-        acc.emails.insert(m.as_str().to_ascii_lowercase());
+        if let Some(candidate) = clean_email_candidate(m.as_str()) {
+            if is_valid_email_for_outreach(&candidate) {
+                acc.emails.insert(candidate);
+            }
+        }
+    }
+
+    // Cloudflare email-protection: decode XOR-encoded `mailto:` payloads
+    // that Cloudflare rewrites into `/cdn-cgi/l/email-protection#<hex>`.
+    for cap in r.cloudflare_email.captures_iter(raw_html) {
+        if let Some(hex) = cap.get(1) {
+            if let Some(decoded) = decode_cloudflare_email(hex.as_str()) {
+                if let Some(candidate) = clean_email_candidate(&decoded) {
+                    if is_valid_email_for_outreach(&candidate) {
+                        acc.emails.insert(candidate);
+                    }
+                }
+            }
+        }
     }
 
     for m in r.whatsapp.find_iter(raw_html) {
-        acc.whatsapp_links.insert(m.as_str().to_string());
+        let link = m.as_str();
+        if is_actionable_whatsapp_link(link) {
+            acc.whatsapp_links.insert(link.to_string());
+        }
     }
 
     set_if_none(&mut acc.instagram, &r.instagram, raw_html);
@@ -455,19 +482,169 @@ fn harvest_regex_facts(raw_html: &str, r: &ExtractorRegexes, acc: &mut SiteAccum
         for el in document.select(&a_sel) {
             if let Some(href) = el.value().attr("href") {
                 if let Some(rest) = href.strip_prefix("tel:") {
-                    let digits = rest.chars().filter(|c| c.is_ascii_digit()).count();
+                    let decoded = decode_percent_space(rest);
+                    let digits = decoded.chars().filter(|c| c.is_ascii_digit()).count();
                     if digits >= 7 {
-                        acc.phones.insert(normalize_phone(rest));
+                        acc.phones.insert(normalize_phone(&decoded));
                     }
                 } else if let Some(rest) = href.strip_prefix("mailto:") {
                     let addr = rest.split('?').next().unwrap_or(rest);
-                    if !addr.is_empty() {
-                        acc.emails.insert(addr.to_ascii_lowercase());
+                    if let Some(candidate) = clean_email_candidate(addr) {
+                        if is_valid_email_for_outreach(&candidate) {
+                            acc.emails.insert(candidate);
+                        }
+                    }
+                } else if let Some(idx) = href
+                    .to_ascii_lowercase()
+                    .find("/cdn-cgi/l/email-protection#")
+                {
+                    let hex = &href[idx + "/cdn-cgi/l/email-protection#".len()..];
+                    // Stop at the first non-hex char (some sites append query strings).
+                    let hex_only: String =
+                        hex.chars().take_while(|c| c.is_ascii_hexdigit()).collect();
+                    if let Some(decoded) = decode_cloudflare_email(&hex_only) {
+                        if let Some(candidate) = clean_email_candidate(&decoded) {
+                            if is_valid_email_for_outreach(&candidate) {
+                                acc.emails.insert(candidate);
+                            }
+                        }
                     }
                 }
             }
         }
     }
+}
+
+/// Decode a Cloudflare email-protection hex payload back into a plaintext
+/// address.
+///
+/// Cloudflare's email obfuscation rewrites `<a href="mailto:foo@bar.com">`
+/// into `<a href="/cdn-cgi/l/email-protection#<hex>">`, where `<hex>` is
+/// the XOR-encoded address. The first byte is the XOR key; each
+/// subsequent byte yields one character of the decoded email.
+///
+/// Returns `None` when:
+/// - `hex` is shorter than 4 chars (no key + payload).
+/// - `hex` has odd length or contains non-hex chars.
+/// - Any decoded byte is not printable ASCII, `@`, or `.` — i.e. the
+///   payload is almost certainly not an email.
+pub(crate) fn decode_cloudflare_email(hex: &str) -> Option<String> {
+    if hex.len() < 4 || hex.len() % 2 != 0 {
+        return None;
+    }
+    if !hex.chars().all(|c| c.is_ascii_hexdigit()) {
+        return None;
+    }
+    let key = u8::from_str_radix(&hex[..2], 16).ok()?;
+    let mut out = String::with_capacity((hex.len() - 2) / 2);
+    let mut i = 2;
+    while i < hex.len() {
+        let byte = u8::from_str_radix(&hex[i..i + 2], 16).ok()? ^ key;
+        let ch = byte as char;
+        // Accept only printable ASCII + `@` + `.` (the latter two are
+        // already covered by the printable range but listed explicitly
+        // for intent).
+        if !(ch.is_ascii_graphic() || ch == '@' || ch == '.') {
+            return None;
+        }
+        out.push(ch);
+        i += 2;
+    }
+    Some(out)
+}
+
+/// Trim trailing punctuation that often leaks in from prose
+/// (`contact us at foo@bar.com,`) and lowercase the address so dedup
+/// stays deterministic.
+pub(crate) fn clean_email_candidate(raw: &str) -> Option<String> {
+    let trimmed = raw.trim().trim_end_matches(|c: char| {
+        matches!(c, ',' | ';' | '.' | ')' | '(' | '<' | '>' | '"' | '\'')
+    });
+    if trimmed.is_empty() {
+        return None;
+    }
+    Some(trimmed.to_ascii_lowercase())
+}
+
+/// Reject emails that are structurally malformed, obviously placeholders,
+/// or that point at static assets (file extensions leaking through).
+///
+/// Returns `true` only for addresses that are safe to feed into the
+/// outreach pipeline. The check is intentionally conservative — false
+/// negatives are cheap (one missed lead), false positives pollute the
+/// dossier and cost downstream agent tokens.
+pub(crate) fn is_valid_email_for_outreach(s: &str) -> bool {
+    let len = s.len();
+    if !(5..=254).contains(&len) {
+        return false;
+    }
+    if s.contains("..") {
+        return false;
+    }
+    if s.starts_with('.') || s.starts_with('-') {
+        return false;
+    }
+    let mut parts = s.splitn(2, '@');
+    let local = parts.next().unwrap_or("");
+    let domain = parts.next().unwrap_or("");
+    if local.is_empty() || domain.is_empty() {
+        return false;
+    }
+    if local.len() > 64 {
+        return false;
+    }
+    if !domain.contains('.') {
+        return false;
+    }
+    // Domain ends with a static-asset extension — the regex picked up
+    // something like `info@logo.png` from an image filename.
+    const JUNK_TLDS: &[&str] = &[
+        ".png", ".jpg", ".jpeg", ".gif", ".css", ".js", ".html", ".svg", ".webp",
+    ];
+    if JUNK_TLDS.iter().any(|ext| domain.ends_with(ext)) {
+        return false;
+    }
+    // Common placeholders / template leftovers.
+    const PLACEHOLDER_SUBSTRINGS: &[&str] = &[
+        "example.com",
+        "example.org",
+        "example.net",
+        "domain.com",
+        "yourdomain",
+        "youremail",
+        "your-email",
+        "your_email",
+        "name@",
+        "email@",
+        "user@",
+        "test@test",
+        "sentry.io",
+    ];
+    if PLACEHOLDER_SUBSTRINGS.iter().any(|p| s.contains(p)) {
+        return false;
+    }
+    true
+}
+
+/// WhatsApp share buttons (`whatsapp.com/share?text=...`) and the like
+/// are not click-to-chat endpoints — they let the user share *the page*,
+/// not contact the business. Keep only links that resolve to a number
+/// (`wa.me/<digits>`) or an explicit send/chat surface.
+pub(crate) fn is_actionable_whatsapp_link(link: &str) -> bool {
+    let lower = link.to_ascii_lowercase();
+    if let Some(idx) = lower.find("wa.me/") {
+        let tail = &lower[idx + "wa.me/".len()..];
+        let digits: String = tail.chars().take_while(|c| c.is_ascii_digit()).collect();
+        return !digits.is_empty();
+    }
+    lower.contains("whatsapp.com/send") || lower.contains("whatsapp.com/chat")
+}
+
+/// Lightweight `%20` -> space decoder for `tel:%20+971...` style hrefs.
+/// We intentionally do not pull in `urlencoding`: the only sequence we
+/// see in the wild is the encoded space.
+pub(crate) fn decode_percent_space(s: &str) -> String {
+    s.replace("%20", " ")
 }
 
 fn set_if_none(slot: &mut Option<String>, re: &Regex, haystack: &str) {
@@ -658,5 +835,51 @@ mod tests {
     fn count_words_ignores_punctuation_tokens() {
         assert_eq!(count_words("hello, world!"), 2);
         assert_eq!(count_words("  --- "), 0);
+    }
+
+    #[test]
+    fn decodes_cloudflare_email() {
+        // Captured from a live Apollo run on didilimousine.com.
+        let hex = "bcd5d2dad3fcd8d5d8d5d0d5d1d3c9cfd5d2d992dfd3d1";
+        let decoded = decode_cloudflare_email(hex).expect("hex should decode");
+        assert!(
+            decoded.contains('@'),
+            "decoded payload missing '@': {decoded:?}"
+        );
+        assert!(
+            is_valid_email_for_outreach(&decoded),
+            "decoded email should pass validation: {decoded:?}"
+        );
+    }
+
+    #[test]
+    fn rejects_obvious_placeholder_emails() {
+        assert!(!is_valid_email_for_outreach("example@example.com"));
+        assert!(!is_valid_email_for_outreach("your-email@domain.com"));
+        assert!(!is_valid_email_for_outreach("name@example.com"));
+    }
+
+    #[test]
+    fn rejects_emails_with_image_extensions() {
+        assert!(!is_valid_email_for_outreach("info@logo.png"));
+        assert!(!is_valid_email_for_outreach("contact@sprite.svg"));
+    }
+
+    #[test]
+    fn whatsapp_filter_keeps_send_pattern() {
+        assert!(is_actionable_whatsapp_link("https://wa.me/971501234567"));
+        assert!(is_actionable_whatsapp_link(
+            "https://api.whatsapp.com/send?phone=971501234567"
+        ));
+        assert!(!is_actionable_whatsapp_link(
+            "https://whatsapp.com/share?text=foo"
+        ));
+    }
+
+    #[test]
+    fn cloudflare_decoder_rejects_garbage() {
+        assert!(decode_cloudflare_email("ab").is_none(), "too short");
+        assert!(decode_cloudflare_email("zzzzzz").is_none(), "non-hex");
+        assert!(decode_cloudflare_email("abc").is_none(), "odd length");
     }
 }

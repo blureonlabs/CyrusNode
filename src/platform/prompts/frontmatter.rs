@@ -99,7 +99,7 @@ mod tests {
         let content = std::fs::read_to_string(&path).expect("fixture exists");
         let (fm, body) = split(&content).expect("parses");
         assert_eq!(fm.name, "business-summary");
-        assert_eq!(fm.version, 1);
+        assert_eq!(fm.version, 2);
         assert_eq!(fm.max_output_tokens, 4000);
         assert!(body.contains("senior B2B analyst"));
     }

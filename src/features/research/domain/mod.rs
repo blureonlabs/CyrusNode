@@ -10,6 +10,6 @@ mod ports;
 
 pub use dossier::{BusinessSummary, DossierBase, Evidence, MaturityTier};
 pub use ports::{
-    BizIntelPort, CrawlError, CrawlPort, CrawlResult, ExtractPort, ExtractedSite, Finding, SeoPort,
-    SeoReport, Severity, SiteFacts, SocialLinks,
+    BizIntelPort, CrawlError, CrawlPort, CrawlResult, ExtractPort, ExtractedSite, Finding,
+    IndustryHint, SeoPort, SeoReport, Severity, SiteFacts, SocialLinks,
 };

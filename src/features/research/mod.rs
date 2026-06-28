@@ -11,4 +11,4 @@ pub mod presentation;
 
 mod configure;
 
-pub use configure::{configure, ResearchDeps, ResearchModule};
+pub use configure::{configure, make_industry_hint, ResearchDeps, ResearchModule};
