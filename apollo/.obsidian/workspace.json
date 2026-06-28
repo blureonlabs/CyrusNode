@@ -178,6 +178,8 @@
   },
   "active": "a3ffe11ba27d24db",
   "lastOpenFiles": [
+    "10-playbooks/pitches.md",
+    "05-knowledge/industries/movers_uae.md",
     "10-playbooks/runbook.md",
     "05-knowledge/industries/limousine_uae.md",
     "03-agents/geo-engine.md",
@@ -211,8 +213,6 @@
     "TODO.md",
     "08-development/sprint-6.md",
     "08-development/sprint-5.md",
-    "08-development/sprint-4.md",
-    "08-development/sprint-3.md",
-    "08-development/sprint-2.md"
+    "08-development/sprint-4.md"
   ]
 }
