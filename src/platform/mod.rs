@@ -9,6 +9,7 @@
 pub mod core;
 pub mod crawler;
 pub mod db;
+pub mod email;
 pub mod events;
 pub mod knowledge;
 pub mod llm;

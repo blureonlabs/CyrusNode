@@ -9,6 +9,10 @@
 //! 4. Parses the response into a tolerant [`RawBizIntel`] DTO.
 //! 5. Re-prompts once with a corrective hint if JSON parsing fails.
 //! 6. Maps to the strict domain [`BusinessSummary`].
+//! 7. If the mapped summary has empty `what_they_sell` or `who_they_serve`,
+//!    re-prompts once more with a "fields required" suffix and keeps whichever
+//!    of the two responses is more populated. Observed in production against
+//!    didilimousine.com where Gemini occasionally omits these two keys.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -109,7 +113,7 @@ impl BizIntelAgent {
                     rendered, err
                 );
                 let retry = LlmRequest {
-                    model,
+                    model: model.clone(),
                     system: None,
                     user: corrective,
                     max_output_tokens,
@@ -126,8 +130,106 @@ impl BizIntelAgent {
             }
         };
 
-        Ok(map_to_domain(raw))
+        let summary = map_to_domain(raw);
+
+        // Completion-retry gate (one-shot). Gemini occasionally omits these two
+        // required keys despite the prompt instructing them — see module docs.
+        // We only fire this *after* the JSON-parse retry path has already
+        // succeeded, so the budget is at most one extra call per summarize().
+        if has_required_field_gap(&summary) {
+            tracing::warn!(
+                "bizintel: required fields empty after first parse; triggering completion retry"
+            );
+            let corrective = format!("{}\n\n{}", rendered, COMPLETION_RETRY_SUFFIX);
+            let retry = LlmRequest {
+                model,
+                system: None,
+                user: corrective,
+                max_output_tokens,
+                temperature,
+                json_response: true,
+            };
+            // Best-effort: if the retry call or its parse fails, log and keep
+            // the original — we never want to fail the agent because the
+            // completion retry itself errored.
+            match self.llm.complete(retry).await {
+                Ok(resp) => match parse_raw(&resp.text) {
+                    Ok(retry_raw) => {
+                        let retry_summary = map_to_domain(retry_raw);
+                        return Ok(choose_more_populated(summary, retry_summary));
+                    }
+                    Err(err) => {
+                        tracing::warn!(
+                            error = %err,
+                            "bizintel: completion-retry response was not valid JSON; keeping original"
+                        );
+                    }
+                },
+                Err(err) => {
+                    tracing::warn!(
+                        error = %err,
+                        "bizintel: completion-retry LLM call failed; keeping original"
+                    );
+                }
+            }
+        }
+
+        Ok(summary)
     }
+}
+
+/// Suffix appended to the original prompt when the first response omitted one
+/// of the two required string fields. Kept as a module constant so the test
+/// can assert it without re-deriving the wording.
+const COMPLETION_RETRY_SUFFIX: &str = "\
+Your previous output had `what_they_sell` and/or `who_they_serve` empty.
+These two fields are REQUIRED — read the context again and produce a
+one-sentence answer for each. Return the full JSON object with every
+field populated, not a delta.";
+
+/// Predicate: does this summary still have one of the two required string
+/// fields empty (after trim)? Whitespace-only counts as empty because Gemini
+/// has been seen returning `" "` instead of an actual sentence.
+fn has_required_field_gap(s: &BusinessSummary) -> bool {
+    s.what_they_sell.trim().is_empty() || s.who_they_serve.trim().is_empty()
+}
+
+/// Pick the response that has both required fields populated. If both still
+/// have gaps we keep the retry only when it is strictly better; otherwise the
+/// original wins and we log a loud warning so it shows up in the dashboard.
+fn choose_more_populated(original: BusinessSummary, retry: BusinessSummary) -> BusinessSummary {
+    let original_gap = has_required_field_gap(&original);
+    let retry_gap = has_required_field_gap(&retry);
+    match (original_gap, retry_gap) {
+        // Retry filled the holes — take it.
+        (true, false) => retry,
+        // Original was fine; retry regressed (shouldn't happen because we
+        // only enter this path when original had a gap, but defensive).
+        (false, true) => original,
+        // Both fine — prefer the retry as it had the "every field populated"
+        // instruction explicitly attached.
+        (false, false) => retry,
+        // Both still have gaps. Per the task spec, return the populated one,
+        // which here means whichever has more non-empty required fields.
+        (true, true) => {
+            tracing::warn!("bizintel: completion retry did not fill required fields");
+            let original_score = required_fields_filled(&original);
+            let retry_score = required_fields_filled(&retry);
+            if retry_score > original_score {
+                retry
+            } else {
+                original
+            }
+        }
+    }
+}
+
+/// Count of the two required fields that are non-empty after trim. Used as a
+/// tiebreaker when both candidates still have gaps.
+fn required_fields_filled(s: &BusinessSummary) -> u8 {
+    let a = u8::from(!s.what_they_sell.trim().is_empty());
+    let b = u8::from(!s.who_they_serve.trim().is_empty());
+    a + b
 }
 
 /// Build the `{{ context }}` string from extracted markdown + structured site facts.
@@ -296,5 +398,173 @@ mod tests {
         let raw = parse_raw(text).expect("parses");
         assert_eq!(raw.what_they_sell.as_deref(), Some("things"));
         assert_eq!(raw.maturity_tier.as_deref(), Some("early"));
+    }
+
+    #[test]
+    fn required_field_gap_predicate() {
+        let mut s = BusinessSummary {
+            what_they_sell: "cars".into(),
+            who_they_serve: "people".into(),
+            value_props: vec![],
+            customer_segments: vec![],
+            maturity_tier: MaturityTier::Growing,
+            evidence: vec![],
+            confidence: 0.5,
+        };
+        assert!(!has_required_field_gap(&s));
+        s.what_they_sell = "  ".into();
+        assert!(has_required_field_gap(&s));
+        s.what_they_sell = "cars".into();
+        s.who_they_serve = "".into();
+        assert!(has_required_field_gap(&s));
+    }
+
+    #[test]
+    fn choose_more_populated_prefers_filled_retry() {
+        let original = BusinessSummary {
+            what_they_sell: "".into(),
+            who_they_serve: "".into(),
+            value_props: vec![],
+            customer_segments: vec![],
+            maturity_tier: MaturityTier::Growing,
+            evidence: vec![],
+            confidence: 0.4,
+        };
+        let retry = BusinessSummary {
+            what_they_sell: "luxury chauffeur rides".into(),
+            who_they_serve: "Dubai corporate travelers".into(),
+            value_props: vec![],
+            customer_segments: vec![],
+            maturity_tier: MaturityTier::Established,
+            evidence: vec![],
+            confidence: 0.8,
+        };
+        let chosen = choose_more_populated(original, retry);
+        assert_eq!(chosen.what_they_sell, "luxury chauffeur rides");
+        assert!(matches!(chosen.maturity_tier, MaturityTier::Established));
+
+        // Both still empty: returns the one with more filled fields and logs
+        // a warning. We assert the "more populated" half wins.
+        let half = BusinessSummary {
+            what_they_sell: "rides".into(),
+            who_they_serve: "".into(),
+            value_props: vec![],
+            customer_segments: vec![],
+            maturity_tier: MaturityTier::Growing,
+            evidence: vec![],
+            confidence: 0.5,
+        };
+        let empty = BusinessSummary {
+            what_they_sell: "".into(),
+            who_they_serve: "".into(),
+            value_props: vec![],
+            customer_segments: vec![],
+            maturity_tier: MaturityTier::Growing,
+            evidence: vec![],
+            confidence: 0.5,
+        };
+        let chosen2 = choose_more_populated(empty, half);
+        assert_eq!(chosen2.what_they_sell, "rides");
+    }
+
+    /// End-to-end test of the completion-retry path with a scripted fake LLM.
+    ///
+    /// Round 1 returns valid JSON but with `what_they_sell` and `who_they_serve`
+    /// empty — the exact didilimousine.com failure mode.
+    /// Round 2 (triggered by the completion-retry gate) returns a fully
+    /// populated payload. We assert:
+    ///   * the LLM was called exactly twice,
+    ///   * the second call's prompt contains the COMPLETION_RETRY_SUFFIX,
+    ///   * the returned summary uses the round-2 values.
+    #[tokio::test]
+    async fn completion_retry_fires_when_required_fields_empty() {
+        use crate::platform::llm::{LlmError, LlmResponse};
+        use async_trait::async_trait;
+        use std::sync::Mutex;
+
+        struct ScriptedLlm {
+            responses: Mutex<Vec<String>>,
+            captured: Mutex<Vec<String>>,
+        }
+
+        #[async_trait]
+        impl LlmClient for ScriptedLlm {
+            async fn complete(&self, req: LlmRequest) -> Result<LlmResponse, LlmError> {
+                self.captured.lock().expect("captured lock").push(req.user);
+                let mut q = self.responses.lock().expect("responses lock");
+                if q.is_empty() {
+                    return Err(LlmError::SchemaMismatch(
+                        "ran out of scripted responses".into(),
+                    ));
+                }
+                let text = q.remove(0);
+                Ok(LlmResponse {
+                    text,
+                    input_tokens: 0,
+                    output_tokens: 0,
+                    cost_usd: 0.0,
+                    latency_ms: 0,
+                    model: req.model,
+                })
+            }
+        }
+
+        // Use the checked-in apollo/04-prompts directory so we exercise the
+        // real PromptLoader -> render -> request -> parse chain without
+        // pulling in a new dev-dependency. Other tests in this crate use the
+        // same CARGO_MANIFEST_DIR pattern (see prompts/loader.rs tests).
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("apollo/04-prompts");
+        let prompts = PromptLoader::load(&root).await.expect("loads");
+
+        let round_one = r#"{
+            "what_they_sell": "",
+            "who_they_serve": "",
+            "value_props": ["chauffeur fleet"],
+            "customer_segments": ["luxury_travelers"],
+            "maturity_tier": "growing",
+            "evidence": [],
+            "confidence": 0.4
+        }"#
+        .to_string();
+        let round_two = r#"{
+            "what_they_sell": "Premium chauffeur and limousine rides in Dubai.",
+            "who_they_serve": "Business travelers and tourists needing reliable airport transfers.",
+            "value_props": ["chauffeur fleet"],
+            "customer_segments": ["luxury_travelers"],
+            "maturity_tier": "established",
+            "evidence": [],
+            "confidence": 0.85
+        }"#
+        .to_string();
+
+        let scripted = Arc::new(ScriptedLlm {
+            responses: Mutex::new(vec![round_one, round_two]),
+            captured: Mutex::new(vec![]),
+        });
+
+        let agent = BizIntelAgent::new(scripted.clone(), prompts);
+        let extracted = ExtractedSite {
+            total_words: 100,
+            markdown: "About us: we drive people.".into(),
+            site_facts: crate::features::research::domain::SiteFacts::default(),
+        };
+
+        let summary = agent
+            .summarize(CompanyId(uuid::Uuid::nil()), &extracted)
+            .await
+            .expect("summarize ok");
+
+        // The retry payload's values win.
+        assert!(summary.what_they_sell.contains("Premium chauffeur"));
+        assert!(summary.who_they_serve.contains("Business travelers"));
+        assert!(matches!(summary.maturity_tier, MaturityTier::Established));
+
+        // Exactly two calls fired, and the second carried the corrective suffix.
+        let captured = scripted.captured.lock().expect("captured lock");
+        assert_eq!(captured.len(), 2, "expected exactly two LLM calls");
+        assert!(
+            captured[1].contains("These two fields are REQUIRED"),
+            "second call must include the completion-retry suffix"
+        );
     }
 }

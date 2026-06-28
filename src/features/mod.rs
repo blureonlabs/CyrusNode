@@ -11,5 +11,7 @@
 //! Later sprints add: `discovery`, `synthesis`, `review`, `outreach`,
 //! `conversations`, `meetings`, `intelligence`.
 
+pub mod discovery;
 pub mod drafting;
 pub mod research;
+pub mod review;
