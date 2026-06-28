@@ -21,6 +21,7 @@ use apollo::features::research::infra::{
 use apollo::platform::core::CompanyId;
 use apollo::platform::crawler::{CrawlerConfig, HttpCrawler};
 use apollo::platform::db::{build_pool, run_migrations, DbConfig};
+use apollo::platform::knowledge::PlaybookLoader;
 use apollo::platform::llm::{GeminiClient, LlmClient};
 use apollo::platform::prompts::PromptLoader;
 
@@ -107,8 +108,12 @@ async fn run_ingest(
     industry: Option<&str>,
     contact: Option<&str>,
 ) -> Result<()> {
-    eprintln!("==> loading prompts...");
+    eprintln!("==> loading prompts + industry playbooks...");
     let prompts = PromptLoader::load("apollo/04-prompts").await?;
+    let playbooks = PlaybookLoader::load("apollo/05-knowledge/industries").await?;
+    let known_industries = playbooks.keys().await;
+    eprintln!("    industries loaded: {known_industries:?}");
+
     eprintln!("==> building Gemini client (single-provider per ADR-012)...");
     let gemini: Arc<dyn LlmClient> = Arc::new(GeminiClient::from_env()?);
 
@@ -126,6 +131,7 @@ async fn run_ingest(
     let draft = Arc::new(EmailWriterAgent::new(
         gemini.clone(),
         prompts.clone(),
+        playbooks.clone(),
         banned_phrases_path,
     ));
     let drafter = DraftOutreach::new(draft);

@@ -26,6 +26,7 @@ use tokio::sync::OnceCell;
 
 use crate::features::drafting::domain::{DraftInput, DraftPort, EmailDraft};
 use crate::platform::core::CompanyId;
+use crate::platform::knowledge::PlaybookLoader;
 use crate::platform::llm::{LlmClient, LlmRequest};
 use crate::platform::prompts::PromptLoader;
 
@@ -78,6 +79,7 @@ impl RawAnchor {
 pub struct EmailWriterAgent {
     llm: Arc<dyn LlmClient>,
     prompts: PromptLoader,
+    playbooks: PlaybookLoader,
     banned_phrases_path: PathBuf,
     banned_phrases: OnceCell<Vec<String>>,
 }
@@ -91,14 +93,36 @@ impl EmailWriterAgent {
     pub fn new(
         llm: Arc<dyn LlmClient>,
         prompts: PromptLoader,
+        playbooks: PlaybookLoader,
         banned_phrases_path: PathBuf,
     ) -> Self {
         Self {
             llm,
             prompts,
+            playbooks,
             banned_phrases_path,
             banned_phrases: OnceCell::new(),
         }
+    }
+
+    /// Resolve the `{{ tone }}` template variable. Uses the industry
+    /// playbook's `## Tone` section if `input.industry` matches a loaded
+    /// playbook and the section is non-empty; otherwise falls back to the
+    /// crate-wide [`DEFAULT_TONE`].
+    async fn resolve_tone(&self, input: &DraftInput) -> String {
+        if let Some(key) = input.industry.as_deref() {
+            if let Some(book) = self.playbooks.get(key).await {
+                if !book.tone.is_empty() {
+                    tracing::debug!(industry = key, "using playbook tone");
+                    return book.tone;
+                }
+            }
+            tracing::debug!(
+                industry = key,
+                "no playbook tone found — falling back to default"
+            );
+        }
+        DEFAULT_TONE.to_string()
     }
 
     /// Return the cached banned-phrase list, loading it from disk on first
@@ -213,7 +237,7 @@ impl DraftPort for EmailWriterAgent {
         // ---- Render template variables. ----
         let business_intel = build_business_intel(input);
         let top_opportunity = pick_top_opportunity(input);
-        let tone = DEFAULT_TONE.to_string();
+        let tone = self.resolve_tone(input).await;
         let banned_csv = banned.join(", ");
 
         let mut vars: HashMap<&str, String> = HashMap::new();

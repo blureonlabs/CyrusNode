@@ -142,7 +142,7 @@ mod tests {
             .await
             .expect("business-summary present");
         assert_eq!(bs.frontmatter.version, 1);
-        assert_eq!(bs.frontmatter.max_output_tokens, 1500);
+        assert_eq!(bs.frontmatter.max_output_tokens, 4000);
 
         let names = loader.names().await;
         // `_overview.md` must NOT appear as a prompt.

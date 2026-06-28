@@ -6,6 +6,7 @@ use crate::features::drafting::application::DraftOutreach;
 use crate::features::drafting::domain::DraftPort;
 use crate::features::drafting::infra::EmailWriterAgent;
 use crate::platform::events::EventSubscription;
+use crate::platform::knowledge::PlaybookLoader;
 use crate::platform::llm::LlmClient;
 use crate::platform::prompts::PromptLoader;
 
@@ -13,6 +14,9 @@ use crate::platform::prompts::PromptLoader;
 pub struct DraftingDeps {
     pub llm: Arc<dyn LlmClient>,
     pub prompts: PromptLoader,
+    /// Industry playbook lookup. The email writer uses this to resolve
+    /// per-industry tone from `DraftInput::industry`.
+    pub playbooks: PlaybookLoader,
     /// Path to the banned-phrases file (one phrase per line, case-insensitive).
     pub banned_phrases_path: std::path::PathBuf,
 }
@@ -28,6 +32,7 @@ pub fn configure(deps: DraftingDeps) -> DraftingModule {
     let draft: Arc<dyn DraftPort> = Arc::new(EmailWriterAgent::new(
         deps.llm.clone(),
         deps.prompts.clone(),
+        deps.playbooks.clone(),
         deps.banned_phrases_path.clone(),
     ));
 

@@ -12,6 +12,7 @@ use crate::features::drafting::{self, DraftingDeps};
 use crate::features::research::{self, ResearchDeps};
 use crate::platform::db::{build_pool, DbConfig, PgPool};
 use crate::platform::events::EventSubscription;
+use crate::platform::knowledge::PlaybookLoader;
 use crate::platform::llm::{GeminiClient, LlmClient};
 use crate::platform::prompts::PromptLoader;
 
@@ -39,6 +40,7 @@ pub async fn build() -> Result<Bootstrap> {
     let deps = PlatformDeps { db };
 
     let prompts = PromptLoader::load("apollo/04-prompts").await?;
+    let playbooks = PlaybookLoader::load("apollo/05-knowledge/industries").await?;
     let gemini: Arc<dyn LlmClient> = Arc::new(GeminiClient::from_env()?);
 
     let research = research::configure(ResearchDeps {
@@ -48,6 +50,7 @@ pub async fn build() -> Result<Bootstrap> {
     let drafting = drafting::configure(DraftingDeps {
         llm: gemini.clone(),
         prompts: prompts.clone(),
+        playbooks: playbooks.clone(),
         banned_phrases_path: std::path::PathBuf::from(
             "apollo/05-knowledge/banned-email-phrases.txt",
         ),

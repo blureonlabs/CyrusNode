@@ -10,6 +10,7 @@ pub mod core;
 pub mod crawler;
 pub mod db;
 pub mod events;
+pub mod knowledge;
 pub mod llm;
 pub mod observability;
 pub mod prompts;

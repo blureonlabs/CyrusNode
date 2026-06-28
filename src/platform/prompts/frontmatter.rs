@@ -100,7 +100,7 @@ mod tests {
         let (fm, body) = split(&content).expect("parses");
         assert_eq!(fm.name, "business-summary");
         assert_eq!(fm.version, 1);
-        assert_eq!(fm.max_output_tokens, 1500);
+        assert_eq!(fm.max_output_tokens, 4000);
         assert!(body.contains("senior B2B analyst"));
     }
 
@@ -111,8 +111,9 @@ mod tests {
         let content = std::fs::read_to_string(&path).expect("fixture exists");
         let (fm, _body) = split(&content).expect("parses");
         assert_eq!(fm.name, "email-writer");
-        assert_eq!(fm.model, "claude-haiku-4-5");
-        assert_eq!(fm.max_output_tokens, 700);
+        // Gemini-only routing per ADR-012; model was claude-haiku-4-5 in ADR-010.
+        assert_eq!(fm.model, "gemini-2.5-flash");
+        assert_eq!(fm.max_output_tokens, 4000);
         assert!(fm.inputs.contains(&"business_intel".to_string()));
     }
 
